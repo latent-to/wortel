@@ -1,0 +1,119 @@
+# wortel
+
+Direct RocksDB reader for a subtensor (substrate) **archive node's** database.
+Replaces the websocket round-trips substrate WS makes for storage queries with
+local reads of the node's own DB — same keys in, same SCALE bytes out, so the
+existing key construction and `scalecodec` decoding on the Python side work
+unchanged.
+
+Pinned to the exact polkadot-sdk revision subtensor builds against
+(`RaoFoundation/polkadot-sdk @ a08c7b0f0b64`), so the trie codec, column
+layout, and key schemes are correct by construction. When subtensor bumps its
+revision, bump the `rev` in `Cargo.toml` and re-check `src/columns.rs` against
+that revision's `sc-client-db`.
+
+## What it maps to
+
+| RPC used by substrate                                 | wortel                                               |
+|-------------------------------------------------------|------------------------------------------------------|
+| `state_getStorage`                                    | `get_storage(block_hash, key)`                       |
+| batched storage queries (`query_multi`)               | `get_storage_many(block_hash, keys)`                 |
+| `state_getKeysPaged` + N × `getStorage` (`query_map`) | `storage_pairs` / `iter_prefix` — one trie traversal |
+| `chain_getHeader`                                     | `header(hash)` (raw SCALE)                           |
+| `chain_getBlock` extrinsics                           | `extrinsics(hash)` / `body(hash)`                    |
+| `chain_getBlockHash(n)`                               | `block_hash(n)`                                      |
+| best / finalized head                                 | `best_block()` / `finalized_block()`                 |
+
+Not covered: `runtime_call` (e.g. `StakeInfoRuntimeApi.get_stake_info_for_coldkeys`)
+— those execute wasm and stay on the RPC path.
+
+## Node requirements
+
+- `--database rocksdb` (the default). ParityDB has no safe concurrent-reader story.
+- `--state-pruning archive` (or the legacy `--pruning=archive`) — plain
+  `archive`, not `archive-canonical`, or you'll have headers without
+  historical state. A block whose state is missing raises a distinct
+  `MissingState` error rather than "not found".
+- DB path is the node's `.../chains/<chain-id>/db/full` directory.
+
+## Open modes (tested against a live finney archive node, 4.2 TB, 143k SSTs)
+
+**`readonly` (default).** Read-only open of the current on-disk snapshot.
+Safe next to the running node; opens in ~20 s at ~220 MB RSS. Frozen at open
+time: later blocks and the un-flushed memtable are invisible, so the visible
+head lags the node (make a new Reader to refresh). If the node's compaction
+deletes an SST under you, calls raise a stale-snapshot error (`OSError` in
+Python) — recreate the Reader and resume (open itself retries this
+automatically). This is the right mode for backfills and historical reads.
+
+**`secondary`.** A RocksDB secondary instance can follow the live node via
+`catch_up()` (replays the node's WAL, so it also sees the memtable). Two
+caveats, both hit in testing: RocksDB requires `max_open_files=-1` here, and
+open replays the primary's entire MANIFEST edit log — after 5 weeks of node
+uptime that log was 667 MB and the replay needed >20 GB of RAM (OOM).
+Restarting the node rolls the MANIFEST to a compact snapshot, after which
+secondary mode is viable until it grows again. Prefer `readonly` unless you
+truly need sub-minute freshness.
+
+**`primary`.** Read-write open; only for a stopped node or a snapshot copy.
+
+wortel raises the process fd soft limit to the hard limit on open — an archive
+DB holds >100k SST files.
+
+## Measured performance (block 8700000, SubtensorModule.TotalHotkeyAlpha,
+47,110 entries, values verified byte-identical against the node's RPC)
+
+| path                                                          | time  |
+|---------------------------------------------------------------|-------|
+| wortel `storage_pairs`, cold cache                            | 1.9 s |
+| wortel `storage_pairs`, adjacent block                        | 1.5 s |
+| RPC `state_getKeysPaged` (keys only, local node)              | 1.4 s |
+| RPC keys + one `getStorage`/key (what `query_map` amounts to) | ~90 s |
+
+Single point reads (`Timestamp.Now`) run in ~25 µs warm. Headers/bodies are
+flat column lookups (no trie).
+
+## Python
+
+```bash
+pip install maturin
+maturin develop --release        # or: maturin build --release → wheel in target/wheels
+```
+
+```python
+import wortel
+
+r = wortel.Reader("/data/subtensor/chains/bittensor/db/full")  # readonly
+num, head = r.best_block()
+
+# Point read: SubtensorModule.Tempo[3]
+key = wortel.storage_prefix("SubtensorModule", "Tempo") + wortel.twox_64_concat((3).to_bytes(2, "little"))
+raw = r.get_storage(head, key)            # SCALE bytes, decode with scalecodec as today
+
+# Full map, one traversal (what query_map does with N+1 RPCs):
+for key, value in r.iter_prefix(head, wortel.storage_prefix("SubtensorModule", "Tempo")):
+    ...
+
+# Refresh view of the chain: readonly mode → new Reader;
+# secondary mode → r.catch_up()
+r = wortel.Reader(db_path)
+```
+
+Keys can equally come from async-substrate-interface's metadata-driven
+`create_storage_key` — wortel only sees bytes.
+
+## Rust
+
+```rust
+use wortel::{Wortel, OpenMode};
+
+let r = Wortel::open("/data/.../db/full", OpenMode::ReadOnly)?;
+let (n, head) = r.best_block()?.unwrap();
+let pairs = r.storage_pairs(&head, &wortel::keys::storage_prefix("SubtensorModule", "Tempo"), None, None)?;
+```
+
+## Tests
+
+`cargo test` builds a synthetic client DB (real LayoutV1 trie via the same
+sp-trie the node uses, plus headers/lookup/meta/body columns) in a temp
+RocksDB and exercises every read path against it.

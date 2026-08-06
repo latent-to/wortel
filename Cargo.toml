@@ -1,0 +1,40 @@
+[package]
+name = "wortel"
+version = "0.1.0"
+edition = "2024"
+description = "Direct RocksDB reader for subtensor archive-node state, mirroring the substrate RPC surface"
+license = "MIT"
+
+[lib]
+name = "wortel"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pinned to the exact polkadot-sdk revision subtensor uses (see ~/Git/subtensor/Cargo.lock)
+sp-core = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
+sp-runtime = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
+sp-trie = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
+
+# Same versions subtensor's lockfile resolves (crates.io)
+codec = { package = "parity-scale-codec", version = "3.7" }
+hash-db = "0.16"
+rocksdb = { version = "0.21", default-features = false, features = ["snappy", "lz4", "zstd", "zlib", "bzip2"] }
+thiserror = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"], optional = true }
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dev-dependencies]
+# Fixtures are written through kvdb-rocksdb so test databases are laid out
+# exactly the way sc-client-db writes them.
+kvdb-rocksdb = "0.19"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
