@@ -95,7 +95,7 @@ impl Reader {
     /// Catch up with blocks the node wrote since open / the last catch-up.
     /// Secondary mode only; errors in readonly/primary mode.
     fn catch_up(&self, py: Python<'_>) -> PyResult<()> {
-        py.allow_threads(|| self.inner.try_catch_up_with_primary())
+        py.detach(|| self.inner.try_catch_up_with_primary())
             .map_err(to_py_err)
     }
 
@@ -170,7 +170,7 @@ impl Reader {
         key: Vec<u8>,
     ) -> PyResult<Option<Vec<u8>>> {
         let hash = h256(block_hash)?;
-        py.allow_threads(|| self.inner.get_storage(&hash, &key))
+        py.detach(|| self.inner.get_storage(&hash, &key))
             .map_err(to_py_err)
     }
 
@@ -182,7 +182,7 @@ impl Reader {
         keys: Vec<Vec<u8>>,
     ) -> PyResult<Vec<Option<Vec<u8>>>> {
         let hash = h256(block_hash)?;
-        py.allow_threads(|| self.inner.get_storage_many(&hash, &keys))
+        py.detach(|| self.inner.get_storage_many(&hash, &keys))
             .map_err(to_py_err)
     }
 
@@ -199,7 +199,7 @@ impl Reader {
         limit: Option<usize>,
     ) -> PyResult<Vec<(Vec<u8>, Vec<u8>)>> {
         let hash = h256(block_hash)?;
-        py.allow_threads(|| {
+        py.detach(|| {
             self.inner
                 .storage_pairs(&hash, &prefix, start_after.as_deref(), limit)
         })
@@ -255,7 +255,7 @@ impl PrefixIter {
                 self.page_size,
             );
             let page = py
-                .allow_threads(|| {
+                .detach(|| {
                     reader
                         .inner
                         .storage_pairs(&hash, &prefix, start.as_deref(), Some(limit))
