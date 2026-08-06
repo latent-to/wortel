@@ -71,53 +71,42 @@ Two runnable benchmarks live in `examples/`:
   and verifies a random sample of values byte-for-byte (needs the wheel
   installed and the RPC reachable).
 
-Output of `bench` on the live finney archive node (4.2 TB, 143k SSTs, host
-NVMe), historical block 8,700,000 with a **fully cold OS page cache** — the
+Measured on the live finney archive node (4.2 TB, 143k SSTs, host NVMe) at
+historical block 8,700,000, starting from a **cold OS page cache** — the
 worst case:
 
-```
-open                             72.2s
-block                       8700000 (best 8785885)
-block_hash(n)                    7.6µs
-header                           1.7ms
-extrinsics ( 15)                2.3ms
-point read, cold                 9.7ms
-point read, warm (avg/1000)     23.3µs
-  (Timestamp.Now = 1784996196001)
-Tempo map (129 pairs)          12.2ms
-get_storage_many (129)          3.9ms
-TotalHotkeyAlpha, cold           69.1s (47110 pairs)
-TotalHotkeyAlpha, warm            1.4s
-TotalHotkeyAlpha, block n-1       1.4s (47110 pairs)
-same, paged x10k                  1.3s
-```
+| operation                     |    time | notes                                  |
+|-------------------------------|--------:|----------------------------------------|
+| open (readonly)               |  40.2 s | ~20 s once the page cache is warm      |
+| `block_hash(n)`               |  5.0 µs | flat column, no trie                   |
+| `header`                      |  112 µs | flat column, no trie                   |
+| `extrinsics`                  |  2.6 ms | 15 extrinsics                          |
+| point read, cold              |  5.5 ms | `Timestamp.Now`                        |
+| point read, warm              |   25 µs | average of 1000                        |
+| `Tempo` map                   | 12.9 ms | 129 pairs                              |
+| `get_storage_many`            |  4.0 ms | 129 keys, one trie context             |
+| `TotalHotkeyAlpha`, cold      |  72.3 s | 47,110 pairs — first-ever traversal is disk-bound |
+| `TotalHotkeyAlpha`, block n−1 |   1.5 s | the incremental-ETL steady state       |
+| same, paged ×10k              |   1.3 s | how `iter_prefix` consumes it          |
 
-The two ~70 s lines are disk-bound: a first-ever traversal random-reads
-across the whole state column. Every subsequent traversal — including at a
-*different, adjacent block*, which is the incremental-ETL steady state — runs
-from cache in ~1.4 s. An ETL walking consecutive blocks pays the cold cost
-once per process, not per block.
+The one expensive line is the *first* traversal of a big map, which
+random-reads across the whole state column. Consecutive blocks share almost
+every trie node, so an ETL walking block-by-block pays that cost once per
+process, then ~1.5 s per block.
 
-Output of `bench_vs_rpc.py` on the same block (page cache warm, node RPC
-local):
+`bench_vs_rpc.py` on the same block and map, against the node's own
+(localhost) RPC:
 
-```
-open_s=26.1
-block=8700000 hash=0x2c9ff31bb0d78a38dd35966193a74a192aeeaad2499b74fe25e90944f4b019e8
-wortel_pairs=47110 wortel_cold_s=1.98
-wortel_warm_s=1.42
-wortel_adjacent_block_s=1.40 pairs=47110
-rpc_keys=47110 rpc_keys_s=2.27
-sample=200 mismatches=0 rpc_per_get_ms=1.4
-rpc_projected_full_s=68 (keys paging + one getStorage per key)
-speedup_vs_rpc=35x
-bench: all values byte-identical
-```
+| path                                                           |  time |
+|----------------------------------------------------------------|------:|
+| wortel `storage_pairs`, warm                                   | 1.4 s |
+| wortel `storage_pairs`, adjacent block                         | 1.4 s |
+| RPC `state_getKeysPaged`, keys only                            | 2.3 s |
+| RPC keys + one `getStorage` per key (what `query_map` does)    |  68 s |
 
-`rpc_projected_full_s` is what `query_map` amounts to (keys paged + one
-`getStorage` per key) against the node's *local* RPC; over a remote websocket
-the gap widens further. wortel returned the identical 47,110 values ~35×
-faster, in one trie traversal.
+A random sample of 200 values came back **byte-identical** to the RPC's;
+wortel returns the full 47,110-entry map ~35× faster, in one traversal.
+Over a remote websocket (the current ETL setup) the gap widens further.
 
 ## Python
 
