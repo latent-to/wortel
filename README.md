@@ -39,7 +39,8 @@ Not covered: `runtime_call` (e.g. `StakeInfoRuntimeApi.get_stake_info_for_coldke
 ## Open modes (tested against a live finney archive node, 4.2 TB, 143k SSTs)
 
 **`readonly` (default).** Read-only open of the current on-disk snapshot.
-Safe next to the running node; opens in ~20 s at ~220 MB RSS. Frozen at open
+Safe next to the running node; opens in ~20 s (~70 s with a cold OS page
+cache) at a few hundred MB RSS. Frozen at open
 time: later blocks and the un-flushed memtable are invisible, so the visible
 head lags the node (make a new Reader to refresh). If the node's compaction
 deletes an SST under you, calls raise a stale-snapshot error (`OSError` in
@@ -60,18 +61,63 @@ truly need sub-minute freshness.
 wortel raises the process fd soft limit to the hard limit on open — an archive
 DB holds >100k SST files.
 
-## Measured performance (block 8700000, SubtensorModule.TotalHotkeyAlpha,
-47,110 entries, values verified byte-identical against the node's RPC)
+## Benchmarks
 
-| path                                                          | time  |
-|---------------------------------------------------------------|-------|
-| wortel `storage_pairs`, cold cache                            | 1.9 s |
-| wortel `storage_pairs`, adjacent block                        | 1.5 s |
-| RPC `state_getKeysPaged` (keys only, local node)              | 1.4 s |
-| RPC keys + one `getStorage`/key (what `query_map` amounts to) | ~90 s |
+Two runnable benchmarks live in `examples/`:
 
-Single point reads (`Timestamp.Now`) run in ~25 µs warm. Headers/bodies are
-flat column lookups (no trie).
+- `bench.rs` — times every read path against a node DB:
+  `cargo run --release --example bench -- <db-path> [block] [mode]`
+- `bench_vs_rpc.py` — races wortel against the node's own RPC on a large map
+  and verifies a random sample of values byte-for-byte (needs the wheel
+  installed and the RPC reachable).
+
+Output of `bench` on the live finney archive node (4.2 TB, 143k SSTs, host
+NVMe), historical block 8,700,000 with a **fully cold OS page cache** — the
+worst case:
+
+```
+open                             72.2s
+block                       8700000 (best 8785885)
+block_hash(n)                    7.6µs
+header                           1.7ms
+extrinsics ( 15)                2.3ms
+point read, cold                 9.7ms
+point read, warm (avg/1000)     23.3µs
+  (Timestamp.Now = 1784996196001)
+Tempo map (129 pairs)          12.2ms
+get_storage_many (129)          3.9ms
+TotalHotkeyAlpha, cold           69.1s (47110 pairs)
+TotalHotkeyAlpha, warm            1.4s
+TotalHotkeyAlpha, block n-1       1.4s (47110 pairs)
+same, paged x10k                  1.3s
+```
+
+The two ~70 s lines are disk-bound: a first-ever traversal random-reads
+across the whole state column. Every subsequent traversal — including at a
+*different, adjacent block*, which is the incremental-ETL steady state — runs
+from cache in ~1.4 s. An ETL walking consecutive blocks pays the cold cost
+once per process, not per block.
+
+Output of `bench_vs_rpc.py` on the same block (page cache warm, node RPC
+local):
+
+```
+open_s=26.1
+block=8700000 hash=0x2c9ff31bb0d78a38dd35966193a74a192aeeaad2499b74fe25e90944f4b019e8
+wortel_pairs=47110 wortel_cold_s=1.98
+wortel_warm_s=1.42
+wortel_adjacent_block_s=1.40 pairs=47110
+rpc_keys=47110 rpc_keys_s=2.27
+sample=200 mismatches=0 rpc_per_get_ms=1.4
+rpc_projected_full_s=68 (keys paging + one getStorage per key)
+speedup_vs_rpc=35x
+bench: all values byte-identical
+```
+
+`rpc_projected_full_s` is what `query_map` amounts to (keys paged + one
+`getStorage` per key) against the node's *local* RPC; over a remote websocket
+the gap widens further. wortel returned the identical 47,110 values ~35×
+faster, in one trie traversal.
 
 ## Python
 
