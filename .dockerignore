@@ -1,0 +1,8 @@
+target/
+.venv/
+.git/
+__pycache__/
+*.so
+docs/
+examples/
+tests/

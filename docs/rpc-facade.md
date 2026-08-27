@@ -201,10 +201,76 @@ reconnect logic takes over (and re-fetches metadata itself).
 | `--refresh-interval`        | `60`    | seconds between Reader reopens |
 | `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count |
 
-Deployment: container sidecar on the node host; mount `db/full` read-only;
-`ulimit -n` unlimited (>100k SSTs); ~1 GB RSS budget. Node must run
-`--database rocksdb` and `--state-pruning archive` (plain, not
-`archive-canonical`) — verify before rollout.
+Node must run `--database rocksdb` and `--state-pruning archive` (plain, not
+`archive-canonical`) — verify before rollout. See **Deployment** below.
+
+## Deployment
+
+**Image.** `Dockerfile` at the repo root: builder stage compiles the wheel
+from source (rust + maturin, `CARGO_BUILD_JOBS` capped at 4 so building on
+the node host leaves CPU for the node), runtime stage is `python:3.12-slim`
+with the wheel + `websockets`. Self-contained — **no PyPI or crates.io
+release is required**; push the image to the taoapp registry like any other
+service. Publishing wortel publicly is optional and orthogonal.
+
+**docker-compose** (the current archive-server layout):
+
+```yaml
+  wortel-facade:
+    image: wortel-serve
+    command: ["--db", "/db", "--upstream", "ws://subtensor-mainnet-archive:9944",
+              "--listen", "0.0.0.0:9955", "--refresh-interval", "300"]
+    volumes:
+      - /mnt/HC_Volume_103568853/blockchain/chains/bittensor/db/full:/db:ro
+    ports: ["9955:9955"]
+    ulimits:
+      nofile: { soft: 1048576, hard: 1048576 }
+    restart: unless-stopped
+```
+
+**Kubernetes** — a true sidecar: a second container in the node's pod, sharing
+the blockchain volume read-only (RocksDB readonly open needs the same
+filesystem, so it must be the same pod — or a hostPath deployment pinned to
+the node's k8s node):
+
+```yaml
+      - name: wortel-facade
+        image: <registry>/wortel-serve:<tag>
+        args: ["--db", "/data/blockchain/chains/bittensor/db/full",
+               "--upstream", "ws://127.0.0.1:9944",
+               "--listen", "0.0.0.0:9955", "--refresh-interval", "300"]
+        ports: [{ containerPort: 9955 }]
+        volumeMounts:
+          - { name: blockchain-data, mountPath: /data/blockchain, readOnly: true }
+        startupProbe:            # open takes ~40–75 s before it listens
+          tcpSocket: { port: 9955 }
+          periodSeconds: 5
+          failureThreshold: 40
+        livenessProbe:
+          tcpSocket: { port: 9955 }
+          periodSeconds: 15
+        resources:
+          requests: { memory: 1Gi, cpu: 500m }
+          limits: { memory: 2Gi }
+```
+
+Plus a `Service` (`wortel-facade`, port 9955); cron jobs then set
+`ARCHIVE_ENDPOINT=ws://wortel-facade.<namespace>.svc:9955`. The facade keeps
+serving during its ~75 s reader reopen, so TCP liveness is safe. File-limit
+note: modern containerd defaults `nofile` to 1048576 — confirm on the
+cluster, the DB holds >100k SSTs.
+
+**Release sequencing** — what has to ship, in order:
+
+1. **Nothing published**: build + push the sidecar image from this repo,
+   deploy next to the node, run `examples/facade_conformance.py` against it.
+2. **Endpoint flip**: change `ARCHIVE_ENDPOINT` for one cron job, then all.
+   Works with the asi version ETL runs today — correctness needs no asi
+   change.
+3. **asi release** (the performance step): land the `state_getPairs` patch in
+   the asi fork, release it (e.g. aio-substrate-interface 3.2.x), bump the
+   ETL image's requirements. The speedup activates by itself — the patch
+   probes the endpoint once per connection and falls back on plain nodes.
 
 ## Failure modes
 
