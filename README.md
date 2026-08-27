@@ -179,3 +179,12 @@ let pairs = r.storage_pairs(&head, &wortel::keys::storage_prefix("SubtensorModul
 `cargo test` builds a synthetic client DB (real LayoutV1 trie via the same
 sp-trie the node uses, plus headers/lookup/meta/body columns) in a temp
 RocksDB and exercises every read path against it.
+
+## The name
+
+**Wortel** is the Afrikaans word for *root*. It fits twice over: every storage
+read here starts at a block's state **root** and walks the trie down from it,
+and the library itself goes to the root of the stack — reading the node's own
+database directly instead of asking over RPC. As a bonus, the last three
+letters are an anagram of **ETL**, which is exactly what wortel was built to
+feed.
