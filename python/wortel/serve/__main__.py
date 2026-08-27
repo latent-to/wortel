@@ -12,7 +12,7 @@ from websockets.asyncio.server import serve
 import wortel
 
 from .readers import ReaderManager
-from .server import Facade
+from .server import Facade, health_check
 
 logger = logging.getLogger("wortel.serve")
 
@@ -87,7 +87,11 @@ async def run(args: argparse.Namespace) -> None:
     facade = Facade(readers, args.upstream, max_keys_page=args.max_keys_page)
     host, _, port = args.listen.rpartition(":")
     async with serve(
-        facade.handle_connection, host or "0.0.0.0", int(port), max_size=None
+        facade.handle_connection,
+        host or "0.0.0.0",
+        int(port),
+        max_size=None,
+        process_request=health_check(readers),
     ):
         logger.info("listening on %s, upstream %s", args.listen, args.upstream)
         await asyncio.Future()

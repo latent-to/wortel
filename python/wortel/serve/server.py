@@ -122,6 +122,26 @@ class Client:
         await self._ws.close()
 
 
+def health_check(readers: ReaderManager):
+    """``process_request`` hook: answer plain-HTTP ``GET /healthz`` on the
+    websocket port so k8s probes can use httpGet. 200 = a Reader is open and
+    can resolve the best block (upstream health is deliberately NOT part of
+    this — local reads keep working when the node RPC is down)."""
+
+    def process_request(connection, request):
+        if request.path != "/healthz":
+            return None  # continue with the websocket handshake
+        try:
+            best = readers.reader.best_block() if readers.reader else None
+        except Exception as e:  # includes a stale snapshot mid-probe
+            return connection.respond(503, f"reader error: {e}\n")
+        if best is None:
+            return connection.respond(503, "no reader / empty database\n")
+        return connection.respond(200, f"ok best_block={best[0]}\n")
+
+    return process_request
+
+
 class Facade:
     def __init__(
         self,

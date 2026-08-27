@@ -243,22 +243,43 @@ the node's k8s node):
         volumeMounts:
           - { name: blockchain-data, mountPath: /data/blockchain, readOnly: true }
         startupProbe:            # open takes ~40–75 s before it listens
-          tcpSocket: { port: 9955 }
+          httpGet: { path: /healthz, port: 9955 }
           periodSeconds: 5
           failureThreshold: 40
+        readinessProbe:
+          httpGet: { path: /healthz, port: 9955 }
+          periodSeconds: 10
         livenessProbe:
-          tcpSocket: { port: 9955 }
+          httpGet: { path: /healthz, port: 9955 }
           periodSeconds: 15
+          failureThreshold: 4
         resources:
-          requests: { memory: 1Gi, cpu: 500m }
-          limits: { memory: 2Gi }
+          requests: { memory: 3Gi, cpu: "1" }
+          limits: { memory: 4Gi, cpu: "2" }
 ```
 
 Plus a `Service` (`wortel-facade`, port 9955); cron jobs then set
-`ARCHIVE_ENDPOINT=ws://wortel-facade.<namespace>.svc:9955`. The facade keeps
-serving during its ~75 s reader reopen, so TCP liveness is safe. File-limit
-note: modern containerd defaults `nofile` to 1048576 — confirm on the
-cluster, the DB holds >100k SSTs.
+`ARCHIVE_ENDPOINT=ws://wortel-facade.<namespace>.svc:9955`. File-limit note:
+modern containerd defaults `nofile` to 1048576 — confirm on the cluster, the
+DB holds >100k SSTs.
+
+**Probes.** The facade answers plain-HTTP `GET /healthz` on the websocket
+port: 200 when a Reader is open and can resolve the best block (the body
+reports it, e.g. `ok best_block=8936761`), 503 otherwise. Upstream node
+health is deliberately NOT part of readiness — local reads keep working when
+the node RPC is down, and an unready facade would not help pass-through
+callers either. The facade keeps serving during its reader reopen, so probes
+do not flap on refresh.
+
+**Sizing (measured on the mainnet DB, 143k SSTs).** Steady-state RSS ~2.4 GB
+— RocksDB table metadata for >100k SSTs dominates, on top of the 512 MiB
+block cache; the two-reader overlap during a refresh peaked at 2.6 GB.
+Requests 3Gi / limit 4Gi gives headroom for chain growth (RSS scales with
+SST count) and concurrent big-map responses (~15 MB each, transient). CPU:
+map traversals release the GIL but hex/JSON encoding holds it, so the
+process cannot use much more than 2 cores — request 1, limit 2; more buys
+nothing without a second replica. Testnet (~2 TB) needs proportionally less;
+keep the same limits unless memory is tight.
 
 **Release sequencing** — what has to ship, in order:
 

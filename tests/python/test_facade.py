@@ -1,5 +1,6 @@
 """Facade behavior against a stub reader and a fake upstream node."""
 
+import asyncio
 import json
 
 import pytest
@@ -7,7 +8,7 @@ import websockets
 from websockets.asyncio.server import serve
 
 from wortel.serve.readers import ReaderManager
-from wortel.serve.server import Facade
+from wortel.serve.server import Facade, health_check
 
 from test_header import make_header
 
@@ -103,7 +104,11 @@ async def rig():
         await readers.start()
         facade = Facade(readers, f"ws://127.0.0.1:{up_port}", max_keys_page=1000)
         async with serve(
-            facade.handle_connection, "127.0.0.1", 0, max_size=None
+            facade.handle_connection,
+            "127.0.0.1",
+            0,
+            max_size=None,
+            process_request=health_check(readers),
         ) as server:
             port = server.sockets[0].getsockname()[1]
             async with websockets.connect(f"ws://127.0.0.1:{port}") as client:
@@ -232,6 +237,23 @@ async def test_invalid_params_is_error_not_crash(rig):
     client, _, _ = rig
     reply = await call(client, "state_getStorage", ["not-hex"])
     assert reply["error"]["code"] == -32602
+
+
+async def test_healthz(rig):
+    client, _, _ = rig
+    port = client.remote_address[1]
+
+    def fetch():
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", "/healthz")
+        resp = conn.getresponse()
+        return resp.status, resp.read().decode()
+
+    status, body = await asyncio.to_thread(fetch)
+    assert status == 200
+    assert body == "ok best_block=2\n"
 
 
 async def test_upstream_notification_forwarded(rig):
