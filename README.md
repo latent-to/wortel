@@ -125,11 +125,15 @@ r = wortel.Reader("/data/subtensor/chains/bittensor/db/full")  # readonly
 num, head = r.best_block()
 
 # Point read: SubtensorModule.Tempo[3]
-key = wortel.storage_prefix("SubtensorModule", "Tempo") + wortel.twox_64_concat((3).to_bytes(2, "little"))
-raw = r.get_storage(head, key)            # SCALE bytes, decode with scalecodec as today
+key = wortel.storage_prefix("SubtensorModule", "Tempo") + wortel.twox_64_concat(
+    (3).to_bytes(2, "little")
+)
+raw = r.get_storage(head, key)  # SCALE bytes, decode with scalecodec as today
 
 # Full map, one traversal (what query_map does with N+1 RPCs):
-for key, value in r.iter_prefix(head, wortel.storage_prefix("SubtensorModule", "Tempo")):
+for key, value in r.iter_prefix(
+    head, wortel.storage_prefix("SubtensorModule", "Tempo")
+):
     ...
 
 # Refresh view of the chain: readonly mode → new Reader;
@@ -139,6 +143,26 @@ r = wortel.Reader(db_path)
 
 Keys can equally come from async-substrate-interface's metadata-driven
 `create_storage_key` — wortel only sees bytes.
+
+## RPC facade (`wortel.serve`)
+
+A JSON-RPC websocket sidecar for the node host: storage/chain reads are
+answered from a readonly Reader, everything else (`state_call`, metadata,
+`system_*`, `author_*`, subscriptions) forwards 1:1 to the node's own RPC.
+Clients built on async-substrate-interface work unchanged — only the endpoint
+URL changes. Design: `docs/rpc-facade.md`.
+
+```bash
+pip install 'wortel[serve]'
+wortel-serve --db /data/subtensor/chains/bittensor/db/full \
+    --upstream ws://127.0.0.1:9944 --listen 0.0.0.0:9955
+```
+
+The facade reopens its Reader every `--refresh-interval` (default 60 s) and
+swaps atomically, so the served head lags the node by up to that interval —
+fine for cron ETL, wrong for head-subscription services (which should keep
+using the node RPC directly). Conformance check against the node:
+`python examples/facade_conformance.py --facade ws://… --node ws://…`.
 
 ## Rust
 

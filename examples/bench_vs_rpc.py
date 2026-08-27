@@ -90,7 +90,9 @@ for k in sample:
     if by_key.get(bytes.fromhex(k[2:])) != bytes.fromhex(v[2:]):
         mismatches += 1
 per_call = (time.monotonic() - t0) / len(sample)
-print(f"sample={len(sample)} mismatches={mismatches} rpc_per_get_ms={per_call * 1000:.1f}")
+print(
+    f"sample={len(sample)} mismatches={mismatches} rpc_per_get_ms={per_call * 1000:.1f}"
+)
 projected = rpc_keys_s + per_call * len(rpc_keys)
 print(f"rpc_projected_full_s={projected:.0f} (keys paging + one getStorage per key)")
 print(f"speedup_vs_rpc={projected / wortel_s:.0f}x")

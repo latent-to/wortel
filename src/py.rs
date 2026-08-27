@@ -63,6 +63,7 @@ impl Reader {
     #[new]
     #[pyo3(signature = (path, mode="readonly", secondary_path=None, cache_mib=512))]
     fn new(
+        py: Python<'_>,
         path: String,
         mode: &str,
         secondary_path: Option<String>,
@@ -88,7 +89,11 @@ impl Reader {
                 )));
             }
         };
-        let inner = Wortel::open_with_cache(path, mode, cache_mib).map_err(to_py_err)?;
+        // Opening scans >100k SSTs and can take a minute — release the GIL so
+        // a server refreshing its Reader in a worker thread stays responsive.
+        let inner = py
+            .detach(|| Wortel::open_with_cache(path, mode, cache_mib))
+            .map_err(to_py_err)?;
         Ok(Reader { inner })
     }
 
@@ -292,6 +297,7 @@ fn blake2_128_concat(data: &[u8]) -> Vec<u8> {
 }
 
 #[pymodule]
+#[pyo3(name = "_wortel")]
 fn wortel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Reader>()?;
     m.add_class::<PrefixIter>()?;
