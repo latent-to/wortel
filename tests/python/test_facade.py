@@ -239,21 +239,49 @@ async def test_invalid_params_is_error_not_crash(rig):
     assert reply["error"]["code"] == -32602
 
 
-async def test_healthz(rig):
+def _http_get(port, path):
+    import http.client
+
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("GET", path)
+    resp = conn.getresponse()
+    return resp.status, resp.read().decode()
+
+
+async def test_livez(rig):
+    client, _, readers = rig
+    port = client.remote_address[1]
+    readers._reader = None
+    status, body = await asyncio.to_thread(_http_get, port, "/livez")
+    assert status == 200
+    assert body == "ok\n"
+
+
+async def test_readyz(rig):
     client, _, _ = rig
     port = client.remote_address[1]
-
-    def fetch():
-        import http.client
-
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        conn.request("GET", "/healthz")
-        resp = conn.getresponse()
-        return resp.status, resp.read().decode()
-
-    status, body = await asyncio.to_thread(fetch)
+    status, body = await asyncio.to_thread(_http_get, port, "/readyz")
     assert status == 200
     assert body == "ok best_block=2\n"
+
+
+async def test_readyz_unready(rig):
+    client, _, readers = rig
+    port = client.remote_address[1]
+    readers._reader = None
+    status, body = await asyncio.to_thread(_http_get, port, "/readyz")
+    assert status == 503
+    assert "no reader" in body
+
+    readers._reader = StubReader()
+
+    def boom():
+        raise OSError("stale snapshot")
+
+    readers.reader.best_block = boom
+    status, body = await asyncio.to_thread(_http_get, port, "/readyz")
+    assert status == 503
+    assert "reader error" in body
 
 
 async def test_upstream_notification_forwarded(rig):

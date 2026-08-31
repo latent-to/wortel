@@ -123,13 +123,22 @@ class Client:
 
 
 def health_check(readers: ReaderManager):
-    """``process_request`` hook: answer plain-HTTP ``GET /healthz`` on the
-    websocket port so k8s probes can use httpGet. 200 = a Reader is open and
-    can resolve the best block (upstream health is deliberately NOT part of
-    this — local reads keep working when the node RPC is down)."""
+    """``process_request`` hook: answer plain-HTTP probes on the websocket
+    port so k8s can use httpGet.
+
+    ``GET /livez`` — 200 as long as the event loop answered. Does not touch
+    the Reader; a stale snapshot must not restart the pod.
+
+    ``GET /readyz`` — 200 when a Reader is open and can resolve the best
+    block. Upstream health is deliberately not part of this: local reads
+    keep working when the node RPC is down.
+    """
 
     def process_request(connection, request):
-        if request.path != "/healthz":
+        path = request.path.split("?", 1)[0]
+        if path == "/livez":
+            return connection.respond(200, "ok\n")
+        if path != "/readyz":
             return None  # continue with the websocket handshake
         try:
             best = readers.reader.best_block() if readers.reader else None
