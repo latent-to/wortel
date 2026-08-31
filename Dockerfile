@@ -1,11 +1,3 @@
-# syntax=docker/dockerfile:1
-# wortel RPC facade sidecar (see docs/rpc-facade.md).
-#
-#   docker build -t wortel-serve .
-#   docker run -v /path/to/chains/bittensor/db/full:/data/subtensor/chains/bittensor/db/full:ro \
-#     -p 9955:9955 -e WORTEL_UPSTREAM=ws://node:9944 \
-#     wortel-serve
-
 FROM rust:1.88-bookworm AS build
 
 RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
