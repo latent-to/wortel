@@ -243,14 +243,14 @@ the node's k8s node):
         volumeMounts:
           - { name: blockchain-data, mountPath: /data/blockchain, readOnly: true }
         startupProbe:            # open takes ~40–75 s before it listens
-          httpGet: { path: /healthz, port: 9955 }
+          httpGet: { path: /livez, port: 9955 }
           periodSeconds: 5
           failureThreshold: 40
         readinessProbe:
-          httpGet: { path: /healthz, port: 9955 }
+          httpGet: { path: /readyz, port: 9955 }
           periodSeconds: 10
         livenessProbe:
-          httpGet: { path: /healthz, port: 9955 }
+          httpGet: { path: /livez, port: 9955 }
           periodSeconds: 15
           failureThreshold: 4
         resources:
@@ -263,13 +263,16 @@ Plus a `Service` (`wortel-facade`, port 9955); cron jobs then set
 modern containerd defaults `nofile` to 1048576 — confirm on the cluster, the
 DB holds >100k SSTs.
 
-**Probes.** The facade answers plain-HTTP `GET /healthz` on the websocket
-port: 200 when a Reader is open and can resolve the best block (the body
-reports it, e.g. `ok best_block=8936761`), 503 otherwise. Upstream node
-health is deliberately NOT part of readiness — local reads keep working when
-the node RPC is down, and an unready facade would not help pass-through
-callers either. The facade keeps serving during its reader reopen, so probes
-do not flap on refresh.
+**Probes.** Plain-HTTP on the websocket port. `GET /livez` is 200 whenever
+the event loop answered — it does not touch RocksDB, so a stale snapshot
+cannot restart the pod. `GET /readyz` is 200 when a Reader is open and can
+resolve the best block (body e.g. `ok best_block=8936761`), 503 otherwise.
+The listen socket only opens after the first Reader open, so startup is
+waiting on `/livez` becoming reachable. Upstream node health is deliberately
+NOT part of readiness — local reads keep working when the node RPC is down,
+and an unready facade would not help pass-through callers either. The facade
+keeps serving during its reader reopen, so `/readyz` does not flap on
+refresh unless `best_block` itself fails.
 
 **Sizing (measured on the mainnet DB, 143k SSTs).** Steady-state RSS ~2.4 GB
 — RocksDB table metadata for >100k SSTs dominates, on top of the 512 MiB
