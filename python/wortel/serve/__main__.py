@@ -45,7 +45,11 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=1000,
         help="cap for state_getKeysPaged count",
     )
-    p.add_argument("--log-level", default="INFO")
+    p.add_argument(
+        "--log-level",
+        default=os.getenv("LOG_LEVEL", "INFO"),
+        help="logging level [env LOG_LEVEL]",
+    )
     args = p.parse_args(argv)
     if not args.db:
         p.error("--db (or WORTEL_DB) is required")
@@ -103,6 +107,8 @@ def main(argv=None) -> None:
         level=args.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    if args.log_level.upper() != "DEBUG":
+        logging.getLogger("websockets").setLevel(logging.WARNING)
     try:
         asyncio.run(run(args))
     except KeyboardInterrupt:

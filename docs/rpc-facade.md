@@ -200,6 +200,7 @@ reconnect logic takes over (and re-fetches metadata itself).
 | `--listen`                  | `0.0.0.0:9955` | bind address |
 | `--refresh-interval`        | `60`    | seconds between Reader reopens |
 | `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count |
+| `--log-level` / `LOG_LEVEL` | `INFO` | logging level; `DEBUG` also shows websockets probe traffic |
 
 Node must run `--database rocksdb` and `--state-pruning archive` (plain, not
 `archive-canonical`) — verify before rollout. See **Deployment** below.
