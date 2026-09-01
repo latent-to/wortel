@@ -79,10 +79,10 @@ class ReaderManager:
         await asyncio.shield(self._refresh_task)
 
     async def _do_refresh(self) -> None:
-        logger.info("reopening reader")
+        logger.debug("reopening reader")
         self._reader = await asyncio.to_thread(self._factory)
         self._last_refresh = asyncio.get_running_loop().time()
-        logger.info("reader swapped")
+        logger.debug("reader swapped")
 
     async def _refresh_loop(self) -> None:
         while True:
