@@ -73,6 +73,9 @@ Two runnable benchmarks live in `examples/`:
 - `bench_vs_rpc.py` — races wortel against the node's own RPC on a large map
   and verifies a random sample of values byte-for-byte (needs the wheel
   installed and the RPC reachable).
+- `bench_router.py` — replays router-shaped traffic (many concurrent small
+  reads at random historical blocks) against the facade's router mode and the
+  node, p50/p99 per method.
 
 Measured on the live finney archive node (4.2 TB, 143k SSTs, host NVMe) at
 historical block 8,700,000, starting from a **cold OS page cache** — the
@@ -163,6 +166,14 @@ swaps atomically, so the served head lags the node by up to that interval —
 fine for cron ETL, wrong for head-subscription services (which should keep
 using the node RPC directly). Conformance check against the node:
 `python examples/facade_conformance.py --facade ws://… --node ws://…`.
+
+A client that holds its own node connections (the subtensor-router) connects
+with the handshake header `X-Wortel-Mode: router`: no pass-through, no
+fallback, no waiting — a read the snapshot cannot answer returns error
+`-32090` at once and the client asks the node. `GET /status` on the same port
+reports health, the snapshot's best/finalized blocks and its age as JSON. The
+facade never exits on a bad or missing database; it retries and reports
+`healthy: false`.
 
 ## Rust
 

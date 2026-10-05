@@ -3,7 +3,9 @@
 > **Status**: implemented as `wortel.serve` (`python/wortel/serve/`), tests in
 > `tests/python/`, conformance script in `examples/facade_conformance.py`.
 > Tested 2026-08-27 against the live mainnet archive node — see **Measured
-> results** below. Not yet deployed for ETL.
+> results** below. Not yet deployed for ETL. Router mode, `GET /status` and
+> never-exit startup (issue #4) are implemented; the router-mode method set
+> still awaits `examples/bench_router.py` numbers from mainnet.
 
 ## Measured results (mainnet archive node, 4.2 TB DB)
 
@@ -149,6 +151,50 @@ encode back to hex. `chain_getBlockHash` accepts int, hex-int, or null.
 A null/omitted `at` resolves to the **snapshot's** best block (see
 consistency, below).
 
+## Router mode
+
+For the subtensor-router, which sends wortel archive-bound historical reads,
+resolver lookups and full-map reads. The router holds its own connections to
+the node, decides what reaches wortel, does any fallback itself and enforces
+the limits — so in this mode the facade answers from the snapshot or says it
+cannot, and never touches the node or makes a caller wait.
+
+Selected per connection at the websocket handshake, on the same port:
+`X-Wortel-Mode: router`. No header is direct mode, unchanged. Any other value
+is refused with HTTP 400, so a typo cannot silently get pass-through.
+
+| situation | direct mode | router mode |
+|-----------|-------------|-------------|
+| method not served locally, batch, non-request frame | forward to the node | `-32601` (batch `-32600`, bad JSON `-32700`); no node connection is ever opened |
+| block not in the snapshot | refresh, retry, then forward to the node | error `-32090` `not in snapshot`, at once; no refresh |
+| `chain_getHeader` of an unknown hash | as above | `null` — the router's resolver reads it as "not a block" |
+| stale snapshot (compaction) | wait for a refresh, retry | `-32090` at once; the forced refresh runs in the background |
+| no reader open yet | forward to the node | `-32090` |
+| `state_getKeysPaged`, `count` > 1000 | truncate to `--max-keys-page` | the node's own error: `4002`, `count exceeds maximum value. value: N, max: 1000` |
+| no block argument (`state_*`/`chain_getHeader`/`chain_getBlock` without a hash, `chain_getBlockHash` without a number) | answer at the snapshot's head | `-32602`; `chain_getHead` and `chain_getFinalizedHead` are not served (`-32601`) |
+| `chain_getBlockHash(n)`, `n` above the snapshot's finalized block | answer, or forward when beyond the head | `-32090` — a number names one block for good only once finalized |
+| `rpc_methods` | forward to the node | `{"methods": [...]}`: exactly the methods served in this mode |
+
+**`-32090` is the one "ask the node" code.** `message` is always
+`not in snapshot`; `data` is a human-readable detail. The router retries the
+call on the node, under the node's limits, so the client sees the node's own
+error text where there is one. `-32602` is reserved for calls the router
+should never have sent (a routing bug); `-32603` is an unexpected local
+failure.
+
+**No request causes a reopen.** Resolver lookups send 32-byte values that are
+not blocks; in direct mode each one would start or join a 40–75 s reopen. The
+router only sends blocks at or below wortel's finalized block, so it never
+needs a newer snapshot; the periodic refresh is unchanged.
+
+**The method set** is `ROUTER_METHODS` in `server.py`, and `rpc_methods`
+advertises it, so the router reads it per pod — a rollout with pods on
+different wortel versions needs no router config. A method belongs in the set
+only if `examples/bench_router.py` shows it beats the node. The current set
+is every block-addressed local method; the paged pair (`state_getKeysPaged`,
+`state_queryStorageAt`) is the one to watch, since through asi's paged
+protocol the facade measured slower than the node (table above).
+
 ## Snapshot consistency and reader lifecycle
 
 A `readonly` Reader is frozen at open time. Rules:
@@ -169,9 +215,14 @@ A `readonly` Reader is frozen at open time. Rules:
    out-of-band): trigger refresh and retry once; if still missing, forward
    that one call upstream. Correctness is preserved either way.
 5. **`MissingState`** (header exists, state pruned) means the node is not a
-   plain archive node → surface loudly; do not fall back silently. Startup
-   runs a self-check: read `Timestamp.Now` at an old block and fail fast with
-   a clear message if pruning is wrong.
+   plain archive node → surface loudly; do not fall back silently. The first
+   open runs a self-check: read `Timestamp.Now` at block 1. A reader that
+   fails it is not served; `/status` gives the reason and the open is retried.
+6. **Never exit.** The listener starts before the first open. A failed open
+   or self-check is retried with backoff (1 s doubling to 60 s) instead of
+   ending the process; a failed refresh keeps the old Reader and shows as
+   `last_refresh_error` in `/status`. Until a reader is open, direct mode
+   forwards everything to the node and router mode answers `-32090`.
 
 ## Upstream pass-through
 
@@ -199,7 +250,7 @@ reconnect logic takes over (and re-fetches metadata itself).
 | `--upstream` / `WORTEL_UPSTREAM` | `ws://127.0.0.1:9944` | node RPC |
 | `--listen`                  | `0.0.0.0:9955` | bind address |
 | `--refresh-interval`        | `60`    | seconds between Reader reopens |
-| `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count |
+| `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count (direct mode; router mode uses the node's 1000 and errors above it) |
 | `--log-level` / `LOG_LEVEL` | `INFO` | logging level; `DEBUG` also shows websockets probe traffic |
 
 Node must run `--database rocksdb` and `--state-pruning archive` (plain, not
@@ -243,17 +294,11 @@ the node's k8s node):
         ports: [{ containerPort: 9955 }]
         volumeMounts:
           - { name: blockchain-data, mountPath: /data/blockchain, readOnly: true }
-        startupProbe:            # open takes ~40–75 s before it listens
-          httpGet: { path: /livez, port: 9955 }
-          periodSeconds: 5
-          failureThreshold: 40
-        readinessProbe:
-          httpGet: { path: /readyz, port: 9955 }
-          periodSeconds: 10
-        livenessProbe:
+        livenessProbe:           # the only probe — see Probes below
           httpGet: { path: /livez, port: 9955 }
           periodSeconds: 15
-          failureThreshold: 4
+          timeoutSeconds: 5
+          failureThreshold: 8
         resources:
           requests: { memory: 3Gi, cpu: "1" }
           limits: { memory: 4Gi, cpu: "2" }
@@ -266,14 +311,47 @@ DB holds >100k SSTs.
 
 **Probes.** Plain-HTTP on the websocket port. `GET /livez` is 200 whenever
 the event loop answered — it does not touch RocksDB, so a stale snapshot
-cannot restart the pod. `GET /readyz` is 200 when a Reader is open and can
+cannot restart the pod, and it answers from process start, during the first
+40–75 s open included. `GET /readyz` is 200 when a Reader is open and can
 resolve the best block (body e.g. `ok best_block=8936761`), 503 otherwise.
-The listen socket only opens after the first Reader open, so startup is
-waiting on `/livez` becoming reachable. Upstream node health is deliberately
-NOT part of readiness — local reads keep working when the node RPC is down,
-and an unready facade would not help pass-through callers either. The facade
-keeps serving during its reader reopen, so `/readyz` does not flap on
-refresh unless `best_block` itself fails.
+
+**Liveness probe only in a sidecar.** A pod is Ready only when all its
+containers are ready, sidecars included. A `readinessProbe` (or
+`startupProbe`) on wortel therefore also gates the *node's* endpoint: every
+wortel restart, slow open or failed reader would take a healthy archive node
+out of rotation. So the example has neither — wortel never exits on a bad
+database either, for the same reason — and keeps a tolerant liveness probe
+for a hung event loop. Health is the consumer's job: the router polls
+`/status`; a standalone (non-sidecar) deployment can still use `/readyz`.
+
+**`GET /status`** — always HTTP 200, `application/json`, never touches
+RocksDB (the values are fixed when a Reader opens):
+
+```json
+{
+  "healthy": true,
+  "reason": null,
+  "best": {"number": 8936761, "hash": "0x…"},
+  "finalized": {"number": 8936758, "hash": "0x…"},
+  "snapshot_opened_at": 1791212132.29,
+  "refreshing": false,
+  "last_refresh_error": null,
+  "genesis_hash": "0x…"
+}
+```
+
+- `healthy` — a Reader is open and passed the self-check. When false,
+  `reason` says why (`opening database`, `cannot open database: …`, the
+  self-check message) and the block fields are `null`.
+- `best` / `finalized` — the snapshot's, not the node's. The router sends a
+  block to wortel only if its number is at or below `finalized.number`.
+- `snapshot_opened_at` — unix seconds when the current Reader's open
+  *started*; the view is no newer than that. Use it to alert on staleness.
+- `refreshing` — a reopen is running now.
+- `last_refresh_error` — `{"message", "at"}` of the most recent open attempt
+  if it failed, `null` once an open succeeds. The old Reader keeps serving,
+  so `healthy` stays true while `snapshot_opened_at` falls behind.
+- `genesis_hash` — catches a database from the wrong chain mounted in the pod.
 
 **Sizing (measured on the mainnet DB, 143k SSTs).** Steady-state RSS ~2.4 GB
 — RocksDB table metadata for >100k SSTs dominates, on top of the 512 MiB
@@ -302,9 +380,10 @@ keep the same limits unless memory is tight.
 | failure | behavior |
 |---------|----------|
 | upstream node RPC down | pass-through methods error; local reads keep working |
-| DB path wrong / not rocksdb | fail fast at startup |
-| stale snapshot (compaction) | auto refresh + one retry |
-| wrong pruning mode | fail fast at startup (self-check) |
+| DB path wrong / not rocksdb | stays up, `/status` `healthy: false` with the reason, open retried with backoff |
+| stale snapshot (compaction) | auto refresh + one retry (router mode: `-32090` at once, refresh in background) |
+| wrong pruning mode | same as a wrong DB path (self-check message as the reason) |
+| refresh fails | old Reader keeps serving; `/status` shows `last_refresh_error` and an aging `snapshot_opened_at` |
 | facade down | cron job fails visibly; flip `ARCHIVE_ENDPOINT` back to the node/public WS — full rollback is an env change |
 
 ## Testing
@@ -314,6 +393,12 @@ keep the same limits unless memory is tight.
 2. **Conformance**: against a live node, replay each local-route method and
    byte-compare facade vs node RPC (the `bench_vs_rpc.py` pattern) — headers,
    blocks, keys pages, `queryStorageAt` batches, `null`-param edge cases.
+   With `--router-mode` the script talks to the facade as the router does and
+   also checks that mode's null, error and refusal rules. Run it after every
+   subtensor upgrade: it is the guard for on-disk compatibility.
+   `examples/bench_router.py` replays router-shaped traffic (concurrent small
+   reads at random historical blocks) against router mode and the node, with
+   p50/p99 per method; its results decide `ROUTER_METHODS`.
 3. **Row diff**: run a job against the facade and against the plain WS
    endpoint for the same block; diff the produced rows. On testnet the WS
    baseline is `testnet-archive.sub.latent.to` itself, so this check rides

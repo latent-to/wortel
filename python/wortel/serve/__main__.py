@@ -43,7 +43,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         "--max-keys-page",
         type=int,
         default=1000,
-        help="cap for state_getKeysPaged count",
+        help="cap for state_getKeysPaged count (direct mode)",
     )
     p.add_argument(
         "--log-level",
@@ -56,40 +56,34 @@ def parse_args(argv=None) -> argparse.Namespace:
     return args
 
 
-async def self_check(readers: ReaderManager) -> None:
-    """Fail fast when the node is not a plain archive node: state for an old
-    block must be present (`MissingState` maps to LookupError)."""
-    best = await readers.call("best_block")
-    if best is None:
-        raise SystemExit("database has no blocks")
-    hash1 = await readers.call("block_hash", 1)
+def self_check(reader) -> None:
+    """Reject a node that is not a plain archive node: state for an old block
+    must be present (`MissingState` maps to LookupError). Raising keeps the
+    facade unhealthy; the ReaderManager retries the open."""
+    hash1 = reader.block_hash(1)
     if hash1 is None:
-        raise SystemExit("database has no block 1 — not an archive node?")
+        raise RuntimeError("database has no block 1 — not an archive node?")
     key = wortel.storage_prefix("Timestamp", "Now")
     try:
-        await readers.call("get_storage", bytes(hash1), key)
+        reader.get_storage(bytes(hash1), key)
     except LookupError as e:
-        raise SystemExit(
+        raise RuntimeError(
             f"state for block 1 is unavailable ({e}); the node must run with "
             "--state-pruning archive (plain, not archive-canonical)"
         ) from None
-    logger.info("self-check ok: best block %s, historical state present", best[0])
 
 
 async def run(args: argparse.Namespace) -> None:
     readers = ReaderManager(
         factory=lambda: wortel.Reader(args.db),
         refresh_interval=args.refresh_interval,
+        check=self_check,
     )
-    logger.info("opening reader at %s (this can take ~a minute cold)", args.db)
-    try:
-        await readers.start()
-    except (RuntimeError, ValueError, OSError) as e:
-        raise SystemExit(f"cannot open database at {args.db}: {e}") from None
-    await self_check(readers)
-
     facade = Facade(readers, args.upstream, max_keys_page=args.max_keys_page)
     host, _, port = args.listen.rpartition(":")
+    # Listen before the first open: /livez and /status must answer during it,
+    # and an open that fails is retried, never fatal — as a sidecar, an exited
+    # container would mark the node's whole pod not-ready.
     async with serve(
         facade.handle_connection,
         host or "0.0.0.0",
@@ -98,6 +92,8 @@ async def run(args: argparse.Namespace) -> None:
         process_request=health_check(readers),
     ):
         logger.info("listening on %s, upstream %s", args.listen, args.upstream)
+        logger.info("opening reader at %s (this can take ~a minute cold)", args.db)
+        await readers.start()
         await asyncio.Future()
 
 
