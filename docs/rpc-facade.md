@@ -190,10 +190,30 @@ needs a newer snapshot; the periodic refresh is unchanged.
 **The method set** is `ROUTER_METHODS` in `server.py`, and `rpc_methods`
 advertises it, so the router reads it per pod — a rollout with pods on
 different wortel versions needs no router config. A method belongs in the set
-only if `examples/bench_router.py` shows it beats the node. The current set
-is every block-addressed local method; the paged pair (`state_getKeysPaged`,
-`state_queryStorageAt`) is the one to watch, since through asi's paged
-protocol the facade measured slower than the node (table above).
+only if `examples/bench_router.py` shows it beats the node. Measured on
+mainnet (2026-10-05, 2000 requests per cell, 32 in flight), p50 wortel vs
+node:
+
+| method | cold | warm | in the set |
+|--------|------|------|------------|
+| `state_getStorage` | 30 ms vs 46 ms | 3.8 ms vs 0.9 ms | yes |
+| `state_queryStorageAt` (64 keys) | 17 ms vs 76 ms | 13 ms vs 17 ms | yes |
+| `state_getPairs` | — (the node refuses it) | — | yes |
+| `chain_getHeader` (not a block) | 15 ms vs 1 ms | 2.9 ms vs 1 ms | no |
+| `chain_getBlock` | 98 ms vs 32 ms | 26 ms vs 2.6 ms | no |
+| `chain_getBlockHash` | 5 ms vs 4 ms | 2.9 ms vs 1.1 ms | no |
+| `state_getKeysPaged` (1000) | 100 ms vs 48 ms | 88 ms vs 13 ms | no |
+
+Router traffic is random historical reads on a multi-TB database, so the
+cold column is the one that counts; the storage reads win it. Warm, the
+node wins everything: the Python layer costs about 100 µs of GIL time per
+request, which caps one facade process near 8–11k req/s against the node's
+20k. That is above the router's expected rate, so a Rust server is not
+planned. The `chain_*` numbers were taken before every read binding released
+the GIL (`src/py.rs`); rerun before re-deciding them. `state_getKeysPaged`
+walks the trie through RocksDB node by node, where the node has an in-memory
+trie cache, and reads values it discards — it stays with the node until that
+path is optimised.
 
 ## Snapshot consistency and reader lifecycle
 

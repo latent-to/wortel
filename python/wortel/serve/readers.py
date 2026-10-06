@@ -23,10 +23,11 @@ Error contract of the bindings (see ``src/py.rs``):
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ def _block(block: Optional[tuple[int, bytes]]) -> Optional[dict]:
     if block is None:
         return None
     return {"number": block[0], "hash": "0x" + block[1].hex()}
+
+
+def _bound(reader: Any, method: Union[str, Callable]) -> Callable:
+    if isinstance(method, str):
+        return getattr(reader, method)
+    return functools.partial(method, reader)
 
 
 def _retrieve(task: asyncio.Task) -> None:
@@ -216,10 +223,14 @@ class ReaderManager:
             except Exception:
                 pass  # logged and recorded by _do_refresh; old reader stays
 
-    async def call(self, method: str, *args: Any, wait_on_stale: bool = True) -> Any:
+    async def call(
+        self, method: Union[str, Callable], *args: Any, wait_on_stale: bool = True
+    ) -> Any:
         """Run ``reader.method(*args)`` in a worker thread (the bindings
-        release the GIL). One transparent refresh+retry on a stale snapshot;
-        every other exception propagates to the caller.
+        release the GIL). ``method`` may instead be a callable, run as
+        ``method(reader, *args)`` to batch several reads into one hop. One
+        transparent refresh+retry on a stale snapshot; every other exception
+        propagates to the caller.
 
         With ``wait_on_stale=False`` a stale snapshot starts the refresh in
         the background and raises ``LookupError`` at once, instead of holding
@@ -229,7 +240,7 @@ class ReaderManager:
         if reader is None:
             raise LookupError("no snapshot open")
         try:
-            return await asyncio.to_thread(getattr(reader, method), *args)
+            return await asyncio.to_thread(_bound(reader, method), *args)
         except OSError:
             if not wait_on_stale:
                 # A reader swapped in since this call started is already fresh.
@@ -241,4 +252,4 @@ class ReaderManager:
                 raise LookupError(f"stale snapshot on {method}") from None
             logger.warning("stale snapshot on %s; refreshing", method)
             await self.refresh(force=True)
-            return await asyncio.to_thread(getattr(self._reader, method), *args)
+            return await asyncio.to_thread(_bound(self._reader, method), *args)

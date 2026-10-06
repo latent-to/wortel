@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection
@@ -47,20 +47,22 @@ NOT_IN_SNAPSHOT = -32090
 STORAGE_KEYS_PAGED_MAX_COUNT = 1000
 _INVALID_COUNT = 4002
 
-# Methods served in router mode, advertised there by rpc_methods. All take
-# an explicit block. A method joins only after examples/bench_router.py shows
-# it beats the node.
+# Methods served in router mode, advertised there by rpc_methods. A method
+# joins only after examples/bench_router.py shows it beats the node
+# (mainnet, 2026-10-05): the storage reads win cold, which is how router
+# traffic arrives; chain_* and the paged walk lost and stay with the node.
+# state_getPairs is unbenchmarked but the node refuses it (unsafe).
 ROUTER_METHODS = (
     "state_getStorage",
     "state_getStorageAt",
     "state_queryStorageAt",
-    "state_getKeysPaged",
-    "state_getKeys",
     "state_getPairs",
-    "chain_getBlockHash",
-    "chain_getHeader",
-    "chain_getBlock",
 )
+
+
+def _block_hashes(reader, numbers: list[int]) -> list:
+    # One worker-thread hop for a whole list, not one per number.
+    return [reader.block_hash(n) for n in numbers]
 
 
 class RpcError(Exception):
@@ -223,11 +225,14 @@ class Facade:
         readers: ReaderManager,
         upstream_url: str,
         max_keys_page: int = 1000,
+        router_methods: Iterable[str] = ROUTER_METHODS,
     ):
         self.readers = readers
         self.upstream_url = upstream_url
         self.direct = Local(readers, max_keys_page)
-        self.router = Local(readers, STORAGE_KEYS_PAGED_MAX_COUNT, router=True)
+        self.router = Local(
+            readers, STORAGE_KEYS_PAGED_MAX_COUNT, router=True, methods=router_methods
+        )
 
     async def handle_connection(self, ws: ServerConnection) -> None:
         client = Client(ws, self)
@@ -327,7 +332,11 @@ class Local:
     """The locally served methods, for one connection mode."""
 
     def __init__(
-        self, readers: ReaderManager, max_keys_page: int, router: bool = False
+        self,
+        readers: ReaderManager,
+        max_keys_page: int,
+        router: bool = False,
+        methods: Iterable[str] = ROUTER_METHODS,
     ):
         self.readers = readers
         self.max_keys_page = max_keys_page
@@ -346,7 +355,7 @@ class Local:
             "chain_getBlock": self._chain_get_block,
         }
         if router:
-            self.methods = {name: self.methods[name] for name in ROUTER_METHODS}
+            self.methods = {name: self.methods[name] for name in methods}
             self.methods["rpc_methods"] = self._rpc_methods
 
     # -- shared helpers -------------------------------------------------------
@@ -461,27 +470,27 @@ class Local:
     async def _chain_get_block_hash(self, params: list) -> Any:
         if not params or params[0] is None:
             return _to_hex(await self._best_hash())
-        if isinstance(params[0], list):
-            return [await self._one_block_hash(n) for n in params[0]]
-        return await self._one_block_hash(params[0])
-
-    async def _one_block_hash(self, value: Any) -> Optional[str]:
-        n = _block_number(value)
+        many = isinstance(params[0], list)
+        numbers = [_block_number(v) for v in (params[0] if many else [params[0]])]
         if self.router:
             # A number names one block for good only once it is finalized.
             snapshot = self.readers.snapshot
             finalized = snapshot and snapshot.finalized
-            if finalized is None or n > finalized[0]:
-                raise LookupError(f"block {n} above snapshot finalized block")
-        h = await self._read("block_hash", n)
-        if h is None:
+            for n in numbers:
+                if finalized is None or n > finalized[0]:
+                    raise LookupError(f"block {n} above snapshot finalized block")
+        hashes = await self._read(_block_hashes, numbers)
+        if None in hashes and not self.router:
             best = await self._read("best_block")
-            if best is not None and n > best[0]:
-                # Beyond our snapshot but possibly known to the node — let
-                # the upstream fallback answer instead of asserting null.
-                raise LookupError(f"block {n} beyond snapshot head {best[0]}")
-            return None
-        return _to_hex(bytes(h))
+            if best is not None:
+                for n, h in zip(numbers, hashes):
+                    if h is None and n > best[0]:
+                        # Beyond our snapshot but possibly known to the node —
+                        # let the upstream fallback answer instead of
+                        # asserting null.
+                        raise LookupError(f"block {n} beyond snapshot head {best[0]}")
+        result = [None if h is None else _to_hex(bytes(h)) for h in hashes]
+        return result if many else result[0]
 
     async def _chain_get_head(self, params: list) -> str:
         return _to_hex(await self._best_hash())

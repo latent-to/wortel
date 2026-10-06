@@ -120,14 +120,34 @@ class FlakyFactory:
         return StubReader()
 
 
+# Every block-addressed method: what router mode can serve. The rig advertises
+# them all so each rule is tested whatever the benchmark-gated default set is.
+ROUTER_CANDIDATES = (
+    "state_getStorage",
+    "state_getStorageAt",
+    "state_queryStorageAt",
+    "state_getKeysPaged",
+    "state_getKeys",
+    "state_getPairs",
+    "chain_getBlockHash",
+    "chain_getHeader",
+    "chain_getBlock",
+)
+
+
 @contextlib.asynccontextmanager
-async def running(readers):
+async def running(readers, router_methods=ROUTER_CANDIDATES):
     """A running facade over ``readers`` and a fake upstream; yields the
     facade's port and the upstream. Does not wait for the first open."""
     upstream = FakeUpstream()
     async with serve(upstream.handler, "127.0.0.1", 0, max_size=None) as up_server:
         up_port = up_server.sockets[0].getsockname()[1]
-        facade = Facade(readers, f"ws://127.0.0.1:{up_port}", max_keys_page=1000)
+        facade = Facade(
+            readers,
+            f"ws://127.0.0.1:{up_port}",
+            max_keys_page=1000,
+            router_methods=router_methods,
+        )
         async with serve(
             facade.handle_connection,
             "127.0.0.1",
@@ -229,6 +249,11 @@ async def test_get_pairs(rig):
 async def test_chain_methods(rig):
     client, _, _ = rig
     assert (await call(client, "chain_getBlockHash", [2]))["result"] == hx(H2)
+    assert (await call(client, "chain_getBlockHash", [[1, 2, 0]]))["result"] == [
+        hx(H1),
+        hx(H2),
+        None,
+    ]
     assert (await call(client, "chain_getBlockHash", ["0x2"]))["result"] == hx(H2)
     assert (await call(client, "chain_getBlockHash", []))["result"] == hx(H2)
     assert (await call(client, "chain_getHead", []))["result"] == hx(H2)
@@ -242,6 +267,8 @@ async def test_future_block_number_falls_back_upstream(rig):
     reply = await call(client, "chain_getBlockHash", [99])
     assert reply["result"] == "from-upstream"
     assert upstream.received[0]["method"] == "chain_getBlockHash"
+    reply = await call(client, "chain_getBlockHash", [[2, 99]])
+    assert reply["result"] == "from-upstream"
 
 
 async def test_unknown_header_hash_falls_back_upstream(rig):
@@ -390,6 +417,7 @@ async def test_router_missing_block_is_not_in_snapshot(router):
         ("state_getKeysPaged", [hx(b"\xaa"), 10, None, unknown]),
         ("chain_getBlock", [unknown]),
         ("chain_getBlockHash", [99]),  # above the snapshot's finalized block
+        ("chain_getBlockHash", [[2, 99]]),
     ]:
         reply = await call(client, method, params)
         assert reply["error"]["code"] == NOT_IN_SNAPSHOT, method
@@ -470,10 +498,23 @@ async def test_router_refuses_calls_without_block(router):
 async def test_router_rpc_methods_lists_what_it_serves(router):
     client, _, _ = router
     methods = (await call(client, "rpc_methods", []))["result"]["methods"]
-    assert methods == sorted([*ROUTER_METHODS, "rpc_methods"])
+    assert methods == sorted([*ROUTER_CANDIDATES, "rpc_methods"])
     for method in methods:
         reply = await call(client, method, [])
         assert reply.get("error", {}).get("code") != -32601, method
+
+
+async def test_router_default_set_is_the_benchmarked_one():
+    assert set(ROUTER_METHODS) <= set(ROUTER_CANDIDATES)
+    readers = ReaderManager(factory=StubReader, refresh_interval=3600)
+    async with running(readers, router_methods=ROUTER_METHODS) as (port, _):
+        await readers.wait_ready()
+        async with router_connect(port) as client:
+            methods = (await call(client, "rpc_methods", []))["result"]["methods"]
+            assert methods == sorted([*ROUTER_METHODS, "rpc_methods"])
+            for method in set(ROUTER_CANDIDATES) - set(ROUTER_METHODS):
+                reply = await call(client, method, [hx(H2)])
+                assert reply["error"]["code"] == -32601, method
 
 
 async def test_direct_rpc_methods_passes_through(rig):
