@@ -47,8 +47,22 @@ NOT_IN_SNAPSHOT = -32090
 STORAGE_KEYS_PAGED_MAX_COUNT = 1000
 _INVALID_COUNT = 4002
 
-# Methods served in router mode, advertised there by rpc_methods. A method
-# joins only after examples/bench_router.py shows it beats the node
+# Every local method that takes an explicit block: what router mode can
+# serve. `--router-methods all` advertises them all, for benchmarking.
+ROUTER_CANDIDATES = (
+    "state_getStorage",
+    "state_getStorageAt",
+    "state_queryStorageAt",
+    "state_getKeysPaged",
+    "state_getKeys",
+    "state_getPairs",
+    "chain_getBlockHash",
+    "chain_getHeader",
+    "chain_getBlock",
+)
+
+# Methods served in router mode by default, advertised there by rpc_methods.
+# A method joins only after examples/bench_router.py shows it beats the node
 # (mainnet, 2026-10-05): the storage reads win cold, which is how router
 # traffic arrives; chain_* and the paged walk lost and stay with the node.
 # state_getPairs is unbenchmarked but the node refuses it (unsafe).

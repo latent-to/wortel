@@ -190,7 +190,9 @@ needs a newer snapshot; the periodic refresh is unchanged.
 **The method set** is `ROUTER_METHODS` in `server.py`, and `rpc_methods`
 advertises it, so the router reads it per pod — a rollout with pods on
 different wortel versions needs no router config. A method belongs in the set
-only if `examples/bench_router.py` shows it beats the node. Measured on
+only if `examples/bench_router.py` shows it beats the node; to measure a
+candidate outside the set, start the facade with `--router-methods all`
+(router mode then serves every block-addressed method). Measured on
 mainnet (2026-10-05, 2000 requests per cell, 32 in flight), p50 wortel vs
 node:
 
@@ -271,6 +273,7 @@ reconnect logic takes over (and re-fetches metadata itself).
 | `--listen`                  | `0.0.0.0:9955` | bind address |
 | `--refresh-interval`        | `60`    | seconds between Reader reopens |
 | `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count (direct mode; router mode uses the node's 1000 and errors above it) |
+| `--router-methods` / `WORTEL_ROUTER_METHODS` | the benchmarked set | methods served in router mode: `all`, or a comma-separated subset of the candidates. For `bench_router.py`; production runs the default |
 | `--log-level` / `LOG_LEVEL` | `INFO` | logging level; `DEBUG` also shows websockets probe traffic |
 
 Node must run `--database rocksdb` and `--state-pruning archive` (plain, not

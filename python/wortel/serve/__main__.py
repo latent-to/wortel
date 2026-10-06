@@ -12,7 +12,7 @@ from websockets.asyncio.server import serve
 import wortel
 
 from .readers import ReaderManager
-from .server import Facade, health_check
+from .server import ROUTER_CANDIDATES, ROUTER_METHODS, Facade, health_check
 
 logger = logging.getLogger("wortel.serve")
 
@@ -46,6 +46,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="cap for state_getKeysPaged count (direct mode)",
     )
     p.add_argument(
+        "--router-methods",
+        default=os.getenv("WORTEL_ROUTER_METHODS", ""),
+        help="methods served in router mode: 'all' (for examples/bench_router.py) "
+        "or a comma-separated subset of them; default is the benchmarked set "
+        "[env WORTEL_ROUTER_METHODS]",
+    )
+    p.add_argument(
         "--log-level",
         default=os.getenv("LOG_LEVEL", "INFO"),
         help="logging level [env LOG_LEVEL]",
@@ -53,7 +60,23 @@ def parse_args(argv=None) -> argparse.Namespace:
     args = p.parse_args(argv)
     if not args.db:
         p.error("--db (or WORTEL_DB) is required")
+    args.router_methods = router_methods(args.router_methods, p.error)
     return args
+
+
+def router_methods(spec: str, error) -> tuple:
+    if not spec:
+        return ROUTER_METHODS
+    if spec == "all":
+        return ROUTER_CANDIDATES
+    methods = tuple(m.strip() for m in spec.split(","))
+    unknown = [m for m in methods if m not in ROUTER_CANDIDATES]
+    if unknown:
+        error(
+            f"--router-methods: {', '.join(unknown)} cannot be served in router "
+            f"mode; choose from {', '.join(ROUTER_CANDIDATES)}"
+        )
+    return methods
 
 
 def self_check(reader) -> None:
@@ -79,7 +102,12 @@ async def run(args: argparse.Namespace) -> None:
         refresh_interval=args.refresh_interval,
         check=self_check,
     )
-    facade = Facade(readers, args.upstream, max_keys_page=args.max_keys_page)
+    facade = Facade(
+        readers,
+        args.upstream,
+        max_keys_page=args.max_keys_page,
+        router_methods=args.router_methods,
+    )
     host, _, port = args.listen.rpartition(":")
     # Listen before the first open: /livez and /status must answer during it,
     # and an open that fails is retried, never fatal — as a sidecar, an exited
@@ -92,6 +120,11 @@ async def run(args: argparse.Namespace) -> None:
         process_request=health_check(readers),
     ):
         logger.info("listening on %s, upstream %s", args.listen, args.upstream)
+        if args.router_methods != ROUTER_METHODS:
+            logger.warning(
+                "router mode serves a non-default set: %s",
+                ", ".join(args.router_methods),
+            )
         logger.info("opening reader at %s (this can take ~a minute cold)", args.db)
         await readers.start()
         await asyncio.Future()

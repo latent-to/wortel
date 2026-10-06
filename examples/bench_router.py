@@ -12,6 +12,10 @@ this is many concurrent small reads at random historical blocks.
         [--blocks 1000] [--max-block N] [--seed 0] \
         [--map SubtensorModule.TotalHotkeyAlpha] [--only state_getStorage,...]
 
+Router mode serves only the methods in ROUTER_METHODS, so to measure a
+candidate that is not in the set yet, start the facade with
+``--router-methods all``; a workload the facade does not advertise is skipped.
+
 Each target gets its own random block sample from the same range, so neither
 is measured on pages the other just pulled into the OS cache. Blocks stop at
 the facade's finalized block (GET /status), as the router's would.
@@ -236,6 +240,13 @@ async def main() -> None:
         ]
         served = (await facade_conns[0].request("rpc_methods", []))["result"]["methods"]
         only = set(args.only.split(",")) if args.only else None
+        wanted = {m for m, _ in workloads(map_prefix).values()}
+        if not wanted <= set(served):
+            print(
+                "the facade does not advertise "
+                f"{', '.join(sorted(wanted - set(served)))} in router mode; "
+                "start wortel-serve with --router-methods all to measure them\n"
+            )
 
         print(
             f"blocks 1..{max_block}, {args.requests} requests per cell, "
@@ -247,6 +258,9 @@ async def main() -> None:
         )
         for name, (method, build) in workloads(map_prefix).items():
             if only is not None and method not in only:
+                continue
+            if method not in served:
+                print(f"{name:<32}skipped: not in rpc_methods\n")
                 continue
             results = {}
             for target in targets:
@@ -269,8 +283,7 @@ async def main() -> None:
                 verdict = "wortel beats the node"
             else:
                 verdict = "node is not beaten"
-            note = "" if method in served else " (not in rpc_methods)"
-            print(f"{'':<32}→ {verdict}{note}\n")
+            print(f"{'':<32}→ {verdict}\n")
 
 
 if __name__ == "__main__":

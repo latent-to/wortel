@@ -8,11 +8,12 @@ import pytest
 import websockets
 from websockets.asyncio.server import serve
 
-from wortel.serve.__main__ import self_check
+from wortel.serve.__main__ import parse_args, self_check
 from wortel.serve.readers import ReaderManager
 from wortel.serve.server import (
     MODE_HEADER,
     NOT_IN_SNAPSHOT,
+    ROUTER_CANDIDATES,
     ROUTER_METHODS,
     Facade,
     health_check,
@@ -120,21 +121,8 @@ class FlakyFactory:
         return StubReader()
 
 
-# Every block-addressed method: what router mode can serve. The rig advertises
-# them all so each rule is tested whatever the benchmark-gated default set is.
-ROUTER_CANDIDATES = (
-    "state_getStorage",
-    "state_getStorageAt",
-    "state_queryStorageAt",
-    "state_getKeysPaged",
-    "state_getKeys",
-    "state_getPairs",
-    "chain_getBlockHash",
-    "chain_getHeader",
-    "chain_getBlock",
-)
-
-
+# The rig advertises every candidate in router mode, so each rule is tested
+# whatever the benchmark-gated default set is.
 @contextlib.asynccontextmanager
 async def running(readers, router_methods=ROUTER_CANDIDATES):
     """A running facade over ``readers`` and a fake upstream; yields the
@@ -502,6 +490,18 @@ async def test_router_rpc_methods_lists_what_it_serves(router):
     for method in methods:
         reply = await call(client, method, [])
         assert reply.get("error", {}).get("code") != -32601, method
+
+
+def test_router_methods_flag():
+    assert parse_args(["--db", "x"]).router_methods == ROUTER_METHODS
+    assert parse_args(["--db", "x", "--router-methods", "all"]).router_methods == (
+        ROUTER_CANDIDATES
+    )
+    assert parse_args(
+        ["--db", "x", "--router-methods", "chain_getHeader, state_getStorage"]
+    ).router_methods == ("chain_getHeader", "state_getStorage")
+    with pytest.raises(SystemExit):
+        parse_args(["--db", "x", "--router-methods", "chain_getHead"])
 
 
 async def test_router_default_set_is_the_benchmarked_one():
