@@ -193,29 +193,41 @@ different wortel versions needs no router config. A method belongs in the set
 only if `examples/bench_router.py` shows it beats the node; to measure a
 candidate outside the set, start the facade with `--router-methods all`
 (router mode then serves every block-addressed method). Measured on
-mainnet (2026-10-05, 2000 requests per cell, 32 in flight), p50 wortel vs
-node:
+mainnet (2026-10-06, 2000 requests per cell, 32 in flight, every read
+binding releasing the GIL), p50 wortel vs node:
 
 | method | cold | warm | in the set |
 |--------|------|------|------------|
-| `state_getStorage` | 30 ms vs 46 ms | 3.8 ms vs 0.9 ms | yes |
-| `state_queryStorageAt` (64 keys) | 17 ms vs 76 ms | 13 ms vs 17 ms | yes |
+| `state_getStorage` | 21 ms vs 38 ms | 3.8 ms vs 0.9 ms | yes |
+| `state_queryStorageAt` (100 keys) | 39 ms vs 112 ms | 14 ms vs 17 ms | yes |
 | `state_getPairs` | — (the node refuses it) | — | yes |
-| `chain_getHeader` (not a block) | 15 ms vs 1 ms | 2.9 ms vs 1 ms | no |
-| `chain_getBlock` | 98 ms vs 32 ms | 26 ms vs 2.6 ms | no |
-| `chain_getBlockHash` | 5 ms vs 4 ms | 2.9 ms vs 1.1 ms | no |
-| `state_getKeysPaged` (1000) | 100 ms vs 48 ms | 88 ms vs 13 ms | no |
+| `chain_getHeader` | 4.8 ms vs 15.5 ms | 4.1 ms vs 1.9 ms | yes |
+| `chain_getHeader` (not a block) | 3.7 ms vs 1.0 ms | 3.4 ms vs 0.9 ms | yes |
+| `chain_getBlock` | 27 ms vs 15 ms | 26 ms vs 2.7 ms | no |
+| `chain_getBlockHash` | 3.5 ms vs 1.2 ms | 3.7 ms vs 1.1 ms | no |
+| `state_getKeysPaged` (1000) | 95 ms vs 31 ms | 78 ms vs 12 ms | no |
 
 Router traffic is random historical reads on a multi-TB database, so the
-cold column is the one that counts; the storage reads win it. Warm, the
-node wins everything: the Python layer costs about 100 µs of GIL time per
-request, which caps one facade process near 8–11k req/s against the node's
-20k. That is above the router's expected rate, so a Rust server is not
-planned. The `chain_*` numbers were taken before every read binding released
-the GIL (`src/py.rs`); rerun before re-deciding them. `state_getKeysPaged`
-walks the trie through RocksDB node by node, where the node has an in-memory
-trie cache, and reads values it discards — it stays with the node until that
-path is optimised.
+cold column is the one that counts; the storage reads and headers win it.
+`chain_getHeader` is in the set although the resolver's case (a value that
+is no block) loses by ~2.7 ms: that is the Python floor on an in-memory
+lookup, and both cases spare the node a read. Warm, the node wins almost
+everything: the Python layer costs about 100 µs of GIL time per request,
+which caps one facade process near 8–11k req/s against the node's 20k. That
+is above the router's expected rate, so a Rust server is not planned.
+`chain_getBlock` costs ~0.8 ms of GIL time per block for hex-encoding the
+extrinsics and `json.dumps` in Python; it rejoins once that encoding moves
+into the bindings. `chain_getBlockHash` is in memory on both sides, so the
+Python floor loses. `state_getKeysPaged` walks the trie through RocksDB node
+by node, where the node has an in-memory trie cache, and reads values it
+discards — it stays with the node until that path is optimised. A full
+`state_getPairs` of a 47k-entry map at a random old block is a first
+traversal every time: 4–60 s, against 20–27 s for the node's paged
+equivalent; the router's archive time budget is what bounds it.
+
+Before comparing cold columns, restart both processes or use a fresh
+`--seed`: a repeated block sample is warm for whichever process kept
+running.
 
 ## Snapshot consistency and reader lifecycle
 

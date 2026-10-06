@@ -17,8 +17,11 @@ candidate that is not in the set yet, start the facade with
 ``--router-methods all``; a workload the facade does not advertise is skipped.
 
 Each target gets its own random block sample from the same range, so neither
-is measured on pages the other just pulled into the OS cache. Blocks stop at
-the facade's finalized block (GET /status), as the router's would.
+is measured on pages the other just pulled into the OS cache. The seed is
+random per run (printed; pass --seed to repeat a run), because a repeated
+sample is warm from the previous run for whichever process was not restarted.
+Blocks stop at the facade's finalized block (GET /status), as the router's
+would.
 
 Needs: pip install 'wortel[serve]' (websockets + the wortel key helpers).
 """
@@ -195,7 +198,7 @@ async def main() -> None:
     )
     p.add_argument("--blocks", type=int, default=1000, help="block sample per target")
     p.add_argument("--max-block", type=int, help="default: facade's finalized block")
-    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--seed", type=int, help="default: random, printed")
     p.add_argument(
         "--map",
         default="SubtensorModule.TotalHotkeyAlpha",
@@ -229,7 +232,8 @@ async def main() -> None:
             for _ in range(args.connections)
         ]
 
-        rng = random.Random(args.seed)
+        seed = args.seed if args.seed is not None else random.randrange(1 << 32)
+        rng = random.Random(seed)
         targets = [
             Target(
                 name,
@@ -250,7 +254,8 @@ async def main() -> None:
 
         print(
             f"blocks 1..{max_block}, {args.requests} requests per cell, "
-            f"{args.concurrency} in flight over {args.connections} connections\n"
+            f"{args.concurrency} in flight over {args.connections} connections, "
+            f"seed {seed}\n"
         )
         print(
             f"{'workload':<32}{'target':<8}{'ok':>7}{'err':>6}"
@@ -265,7 +270,7 @@ async def main() -> None:
             results = {}
             for target in targets:
                 r = results[target.name] = await run_workload(
-                    target, method, build, args.requests, args.concurrency, args.seed
+                    target, method, build, args.requests, args.concurrency, seed
                 )
                 print(
                     f"{name if target is targets[0] else '':<32}{target.name:<8}"

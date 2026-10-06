@@ -63,14 +63,17 @@ ROUTER_CANDIDATES = (
 
 # Methods served in router mode by default, advertised there by rpc_methods.
 # A method joins only after examples/bench_router.py shows it beats the node
-# (mainnet, 2026-10-05): the storage reads win cold, which is how router
-# traffic arrives; chain_* and the paged walk lost and stay with the node.
-# state_getPairs is unbenchmarked but the node refuses it (unsafe).
+# (mainnet, 2026-10-06): the storage reads and chain_getHeader win cold,
+# which is how router traffic arrives. chain_getBlock (Python-side encoding),
+# chain_getBlockHash (in-memory on both sides, the Python floor loses) and
+# the paged walk stay with the node. state_getPairs is unbenchmarked but the
+# node refuses it (unsafe).
 ROUTER_METHODS = (
     "state_getStorage",
     "state_getStorageAt",
     "state_queryStorageAt",
     "state_getPairs",
+    "chain_getHeader",
 )
 
 
