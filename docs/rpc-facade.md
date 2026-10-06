@@ -4,9 +4,9 @@
 > in `serve/tests/facade.rs`), conformance script in
 > `examples/facade_conformance.py`. The first implementation was Python
 > (`wortel.serve`); it was replaced on 2026-10-06 because its ~3 ms
-> per-request floor lost to the node on every warm read (see **Router
-> mode**). The measurements below are from the Python facade; re-measure
-> with the binary before re-deciding the router-mode method set.
+> per-request floor lost to the node on every warm read. **Measured
+> results** just below are from the Python facade (ETL patterns); the
+> router-mode table under **Router mode** is from the Rust binary.
 
 ## Measured results (mainnet archive node, 4.2 TB DB)
 
@@ -198,44 +198,43 @@ different wortel versions needs no router config. A method belongs in the set
 only if `examples/bench_router.py` shows it beats the node; to measure a
 candidate outside the set, start the facade with `--router-methods all`
 (router mode then serves every block-addressed method). Measured on
-mainnet (2026-10-06, one run, fresh blocks from the last 1M, 2000 requests
-per cell, 32 in flight, every read binding releasing the GIL), p50 wortel
-vs node:
+mainnet with the Rust server (2026-10-06, one run, fresh blocks from the
+last 1M, 2000 requests per cell, 32 in flight), p50 wortel vs node:
 
 | method | cold | warm | in the set |
 |--------|------|------|------------|
-| `state_getStorage` | 16 ms vs 32 ms | 3.8 ms vs 0.9 ms | yes |
-| `state_queryStorageAt` (64 keys) | 18 ms vs 77 ms | 17 ms vs 20 ms | yes |
-| `state_queryStorageAt` (100 large values) | 44 ms vs 108 ms | 44 ms vs 47 ms | yes |
+| `state_getStorage` | 30 ms vs 43 ms | 1.2 ms vs 1.0 ms | yes |
+| `state_queryStorageAt` (64 keys) | 16 ms vs 71 ms | 11 ms vs 18 ms | yes |
+| `state_queryStorageAt` (100 large values) | 31 ms vs 115 ms | 27 ms vs 42 ms | yes |
 | `state_getPairs` | — (the node refuses it) | — | yes |
-| `chain_getHeader` | 4.5 ms vs 13 ms | 4.1 ms vs 2.0 ms | yes |
-| `chain_getHeader` (not a block) | 3.6 ms vs 0.9 ms | 3.1 ms vs 0.9 ms | yes |
-| `chain_getBlock` | 24 ms vs 12 ms | 24 ms vs 2.5 ms | no |
-| `chain_getBlockHash` | 3.3 ms vs 1.0 ms | 3.2 ms vs 1.1 ms | no |
-| `state_getKeysPaged` (1000) | 154 ms vs 110 ms (p99 201 ms vs 1.1 s) | 147 ms vs 56 ms | no |
+| `chain_getHeader` | 1.3 ms vs 14.6 ms | 1.1 ms vs 2.0 ms | yes |
+| `chain_getHeader` (not a block) | 1.1 ms vs 0.9 ms | 0.9 ms vs 0.9 ms | yes |
+| `chain_getBlock` | 8.7 ms vs 12.8 ms | 2.0 ms vs 2.6 ms | yes |
+| `chain_getBlockHash` | 1.0 ms vs 1.1 ms | 1.0 ms vs 1.1 ms | yes |
+| `chain_getBlockHash` (list) | 1.3 ms vs 2.1 ms | 1.4 ms vs 1.9 ms | yes |
+| `state_getKeysPaged` (1000) | 110 ms vs 176 ms (p99 177 ms vs 1.3 s) | 104 ms vs 56 ms | no |
 
 Router traffic is random historical reads on a multi-TB database, so the
-cold column is the one that counts; the storage reads and headers win it.
-`chain_getHeader` is in the set although the resolver's case (a value that
-is no block) loses by ~2.7 ms: that was the Python facade's floor on an
-in-memory lookup, and both cases spare the node a read. Warm, the node won
-almost everything against the Python facade: its layer cost about 100 µs
-of GIL time per request, a ~3 ms floor at 32 in flight and a ceiling near
-8–11k req/s against the node's 20k. That floor is why the facade is now
-Rust; expect parity with the node warm and the cold wins to stay, and
-re-measure. `chain_getBlock` cost ~0.8 ms per block for hex-encoding in
-Python; the Rust server serializes the node's own `SignedBlock` type, so it
-is a candidate again. `state_getKeysPaged` walks the trie through RocksDB
-node by node, where the node has an in-memory trie cache; it now reads keys
-only (`storage_keys`) but stays with the node until re-measured; its p99 was
-far better than the node's only because the node's cold tail is bad. A full
-`state_getPairs` of the 47k-entry `TotalHotkeyAlpha` map at a random block
-from the last 1M takes about 10 s once the state column's SST metadata is
-warm and up to 60 s before, against 7–18 s for the node's paged equivalent:
-at random blocks the one-traversal advantage is gone (it is a first
-traversal every time; the 3.6× in the table at the top is for consecutive
-blocks), and either side can approach the router's 90 s archive timeout.
-The router's archive time budget is what bounds it.
+cold column is the one that counts. Wortel wins it wherever the disk is the
+cost — storage reads 1.5–4×, headers 11×, blocks 1.5× — and is at parity
+with the node on what both hold in memory (warm point reads, block hashes,
+the resolver's lookup of a value that is no block). The Python facade this
+replaced had a ~3 ms floor at 32 in flight and lost every warm row; its
+numbers are in the git history of this file.
+
+`state_getKeysPaged` is the one method left with the node. Wortel's cost is
+flat (~105 ms cold or warm): the walk goes through RocksDB node by node, so
+it is CPU, not disk. The node's is 50 ms warm from its in-memory trie cache
+and 100–175 ms cold with a 1 s tail. Wortel is steadier and wins cold, but
+loses 2× warm; a trie-node cache in the reader is the fix. A full
+`state_getPairs` or `state_getKeys` of the 47k-entry `TotalHotkeyAlpha` map
+at a random block takes 11–16 s, and up to 67 s for the first one in a
+block range, against 9–16 s for the node's paged equivalent: at random
+blocks the one-traversal advantage is gone (it is a first traversal every
+time; the 3.6× in the table at the top is for consecutive blocks), and the
+cold case can approach the router's 90 s archive timeout. `state_getPairs`
+is in the set because the node refuses it; the router's archive time budget
+is what bounds it.
 
 Before comparing cold columns, restart both processes or use a fresh
 `--seed`: a repeated block sample is warm for whichever process kept

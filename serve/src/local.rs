@@ -35,17 +35,20 @@ pub const ROUTER_CANDIDATES: &[&str] = &[
 
 /// Methods served in router mode by default, advertised there by
 /// `rpc_methods`. A method joins only after `examples/bench_router.py` shows
-/// it beats the node (mainnet, 2026-10-06): the storage reads and
-/// `chain_getHeader` win cold, which is how router traffic arrives.
-/// `chain_getBlock`, `chain_getBlockHash` and the paged walk stay with the
-/// node; `state_getPairs` is unbenchmarked but the node refuses it (unsafe).
-/// Re-measure with the Rust server before changing the set.
+/// it beats the node (mainnet, 2026-10-06, this server): the storage reads,
+/// headers and blocks win cold — how router traffic arrives — and are at
+/// parity or better warm; block hashes are at parity. `state_getPairs` is
+/// unbenchmarked against the node, which refuses it (unsafe). The paged key
+/// walk (`state_getKeysPaged`, `state_getKeys`) wins cold but loses 2× warm
+/// to the node's trie cache, and stays with the node.
 pub const ROUTER_METHODS: &[&str] = &[
     "state_getStorage",
     "state_getStorageAt",
     "state_queryStorageAt",
     "state_getPairs",
+    "chain_getBlockHash",
     "chain_getHeader",
+    "chain_getBlock",
 ];
 
 const DIRECT_METHODS: &[&str] = &[

@@ -28,6 +28,7 @@ use axum::extract::ws::{
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::serve::ListenerExt;
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -163,7 +164,8 @@ impl Upstream {
                 .max_message_size(None)
                 .max_frame_size(None);
             let (ws, _) =
-                tokio_tungstenite::connect_async_with_config(&self.url, Some(config), false)
+                // TCP_NODELAY: small frames must not wait on Nagle + delayed ACK.
+                tokio_tungstenite::connect_async_with_config(&self.url, Some(config), true)
                     .await
                     .map_err(|e| e.to_string())?;
             let (tx, mut rx) = ws.split();
@@ -360,6 +362,11 @@ async fn connection(app: Arc<App>, socket: WebSocket, mode: Mode) {
 }
 
 pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) -> std::io::Result<()> {
+    // TCP_NODELAY: with pipelined small replies, Nagle holds a frame until
+    // the client's delayed ACK — a 40 ms stall, seen as the p99 on mainnet.
+    let listener = listener.tap_io(|tcp| {
+        let _ = tcp.set_nodelay(true);
+    });
     axum::serve(listener, router(app))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
