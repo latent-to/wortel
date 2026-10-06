@@ -193,19 +193,20 @@ different wortel versions needs no router config. A method belongs in the set
 only if `examples/bench_router.py` shows it beats the node; to measure a
 candidate outside the set, start the facade with `--router-methods all`
 (router mode then serves every block-addressed method). Measured on
-mainnet (2026-10-06, 2000 requests per cell, 32 in flight, every read
-binding releasing the GIL), p50 wortel vs node:
+mainnet (2026-10-06, one run, fresh block sample, 2000 requests per cell,
+32 in flight, every read binding releasing the GIL), p50 wortel vs node:
 
 | method | cold | warm | in the set |
 |--------|------|------|------------|
-| `state_getStorage` | 21 ms vs 38 ms | 3.8 ms vs 0.9 ms | yes |
-| `state_queryStorageAt` (100 keys) | 39 ms vs 112 ms | 14 ms vs 17 ms | yes |
+| `state_getStorage` | 30 ms vs 44 ms | 3.7 ms vs 1.1 ms | yes |
+| `state_queryStorageAt` (64 keys) | 17 ms vs 78 ms | 14 ms vs 16 ms | yes |
+| `state_queryStorageAt` (100 large values) | 40 ms vs 116 ms | 40 ms vs 52 ms | yes |
 | `state_getPairs` | — (the node refuses it) | — | yes |
-| `chain_getHeader` | 4.8 ms vs 15.5 ms | 4.1 ms vs 1.9 ms | yes |
-| `chain_getHeader` (not a block) | 3.7 ms vs 1.0 ms | 3.4 ms vs 0.9 ms | yes |
-| `chain_getBlock` | 27 ms vs 15 ms | 26 ms vs 2.7 ms | no |
-| `chain_getBlockHash` | 3.5 ms vs 1.2 ms | 3.7 ms vs 1.1 ms | no |
-| `state_getKeysPaged` (1000) | 95 ms vs 31 ms | 78 ms vs 12 ms | no |
+| `chain_getHeader` | 4.4 ms vs 15.1 ms | 4.1 ms vs 1.8 ms | yes |
+| `chain_getHeader` (not a block) | 3.4 ms vs 0.9 ms | 3.0 ms vs 0.9 ms | yes |
+| `chain_getBlock` | 25 ms vs 14 ms | 24 ms vs 2.4 ms | no |
+| `chain_getBlockHash` | 3.4 ms vs 1.1 ms | 3.3 ms vs 1.1 ms | no |
+| `state_getKeysPaged` (1000) | 95 ms vs 82 ms (p99 248 ms vs 2.2 s) | 78 ms vs 20 ms | no |
 
 Router traffic is random historical reads on a multi-TB database, so the
 cold column is the one that counts; the storage reads and headers win it.
@@ -220,10 +221,12 @@ extrinsics and `json.dumps` in Python; it rejoins once that encoding moves
 into the bindings. `chain_getBlockHash` is in memory on both sides, so the
 Python floor loses. `state_getKeysPaged` walks the trie through RocksDB node
 by node, where the node has an in-memory trie cache, and reads values it
-discards — it stays with the node until that path is optimised. A full
+discards — it stays with the node until that path is optimised; its p99 is
+far better than the node's only because the node's cold tail is bad. A full
 `state_getPairs` of a 47k-entry map at a random old block is a first
-traversal every time: 4–60 s, against 20–27 s for the node's paged
-equivalent; the router's archive time budget is what bounds it.
+traversal every time: 20–70 s, against 20–90 s for the node's paged
+equivalent, and either can pass the router's 90 s archive timeout; the
+router's archive time budget is what bounds it.
 
 Before comparing cold columns, restart both processes or use a fresh
 `--seed`: a repeated block sample is warm for whichever process kept
