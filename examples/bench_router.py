@@ -9,7 +9,7 @@ this is many concurrent small reads at random historical blocks.
     python examples/bench_router.py \
         --facade ws://127.0.0.1:9955 --node ws://127.0.0.1:9944 \
         [--requests 2000] [--concurrency 32] [--connections 4] \
-        [--blocks 1000] [--max-block N] [--seed 0] \
+        [--blocks 1000] [--max-block N] [--window 1000000] [--seed N] \
         [--map SubtensorModule.TotalHotkeyAlpha] [--only state_getStorage,...]
 
 Router mode serves only the methods in ROUTER_METHODS, so to measure a
@@ -20,8 +20,9 @@ Each target gets its own random block sample from the same range, so neither
 is measured on pages the other just pulled into the OS cache. The seed is
 random per run (printed; pass --seed to repeat a run), because a repeated
 sample is warm from the previous run for whichever process was not restarted.
-Blocks stop at the facade's finalized block (GET /status), as the router's
-would.
+Blocks are drawn from the last --window blocks (default 1,000,000) ending at
+the facade's finalized block (GET /status) or --max-block, so the sample sits
+where the subnet maps exist and where the router's historical traffic is.
 
 Needs: pip install 'wortel[serve]' (websockets + the wortel key helpers).
 """
@@ -174,9 +175,9 @@ async def run_workload(
 
 
 async def sample_blocks(
-    node: Conn, rng: random.Random, max_block: int, count: int
+    node: Conn, rng: random.Random, min_block: int, max_block: int, count: int
 ) -> list[tuple[int, str]]:
-    numbers = [rng.randint(1, max_block) for _ in range(count)]
+    numbers = [rng.randint(min_block, max_block) for _ in range(count)]
     blocks = []
     for i in range(0, count, 500):
         chunk = numbers[i : i + 500]
@@ -198,6 +199,12 @@ async def main() -> None:
     )
     p.add_argument("--blocks", type=int, default=1000, help="block sample per target")
     p.add_argument("--max-block", type=int, help="default: facade's finalized block")
+    p.add_argument(
+        "--window",
+        type=int,
+        default=1_000_000,
+        help="sample blocks from the last N blocks before --max-block",
+    )
     p.add_argument("--seed", type=int, help="default: random, printed")
     p.add_argument(
         "--map",
@@ -212,6 +219,7 @@ async def main() -> None:
         raise SystemExit(f"facade not healthy: {status}")
     finalized = status["finalized"]["number"]
     max_block = min(args.max_block or finalized, finalized)
+    min_block = max(1, max_block - args.window + 1)
     map_prefix = hx(wortel.storage_prefix(*args.map.split(".", 1)))
 
     async with contextlib.AsyncExitStack() as stack:
@@ -238,7 +246,9 @@ async def main() -> None:
             Target(
                 name,
                 conns,
-                await sample_blocks(node_conns[0], rng, max_block, args.blocks),
+                await sample_blocks(
+                    node_conns[0], rng, min_block, max_block, args.blocks
+                ),
             )
             for name, conns in (("wortel", facade_conns), ("node", node_conns))
         ]
@@ -253,7 +263,7 @@ async def main() -> None:
             )
 
         print(
-            f"blocks 1..{max_block}, {args.requests} requests per cell, "
+            f"blocks {min_block}..{max_block}, {args.requests} requests per cell, "
             f"{args.concurrency} in flight over {args.connections} connections, "
             f"seed {seed}\n"
         )
