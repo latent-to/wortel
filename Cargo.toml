@@ -1,3 +1,6 @@
+[workspace]
+members = ["serve"]
+
 [package]
 name = "wortel"
 version = "0.1.0"
@@ -26,14 +29,17 @@ libc = "0.2"
 
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"], optional = true }
 
+# Fixtures are written through kvdb-rocksdb so test databases are laid out
+# exactly the way sc-client-db writes them (`fixture` feature, tests only).
+kvdb-rocksdb = { version = "0.19", optional = true }
+
 [features]
 default = []
 python = ["dep:pyo3"]
+fixture = ["dep:kvdb-rocksdb"]
 
 [dev-dependencies]
-# Fixtures are written through kvdb-rocksdb so test databases are laid out
-# exactly the way sc-client-db writes them.
-kvdb-rocksdb = "0.19"
+wortel = { path = ".", features = ["fixture"] }
 tempfile = "3"
 
 [profile.release]

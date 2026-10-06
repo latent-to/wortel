@@ -1,11 +1,12 @@
 # wortel RPC facade — design
 
-> **Status**: implemented as `wortel.serve` (`python/wortel/serve/`), tests in
-> `tests/python/`, conformance script in `examples/facade_conformance.py`.
-> Tested 2026-08-27 against the live mainnet archive node — see **Measured
-> results** below. Not yet deployed for ETL. Router mode, `GET /status` and
-> never-exit startup (issue #4) are implemented; the router-mode method set
-> still awaits `examples/bench_router.py` numbers from mainnet.
+> **Status**: implemented as the Rust binary `wortel-serve` (`serve/`, tests
+> in `serve/tests/facade.rs`), conformance script in
+> `examples/facade_conformance.py`. The first implementation was Python
+> (`wortel.serve`); it was replaced on 2026-10-06 because its ~3 ms
+> per-request floor lost to the node on every warm read (see **Router
+> mode**). The measurements below are from the Python facade; re-measure
+> with the binary before re-deciding the router-mode method set.
 
 ## Measured results (mainnet archive node, 4.2 TB DB)
 
@@ -75,13 +76,12 @@ other method to the node's own RPC. ETL cron jobs keep
 
 ## Placement: inside the wortel repo
 
-The facade ships in this repo as a Python module (`wortel.serve`) in the same
-wheel, via maturin's mixed Rust/Python layout (`python-source`), with an
-optional dependency extra:
+The facade ships in this repo as the `wortel-serve` crate (`serve/`), a
+workspace member that depends on the `wortel` library:
 
 ```
-pip install 'wortel[serve]'          # adds: websockets
-python -m wortel.serve --db /data/subtensor/chains/bittensor/db/full \
+cargo build --release -p wortel-serve
+target/release/wortel-serve --db /data/subtensor/chains/bittensor/db/full \
     --upstream ws://127.0.0.1:9944 --listen 0.0.0.0:9955
 ```
 
@@ -94,10 +94,15 @@ Why here and not elsewhere:
 - **Not in taoapp**: the facade is subtensor-generic, not taoapp-specific,
   and belongs next to the reader whose polkadot-sdk pin it depends on. One
   repo, one wheel, one sidecar artifact.
-- **Python, not a Rust binary**: all reader methods release the GIL
-  (`py.detach`), so an asyncio server scales; the JSON-RPC layer is ~500
-  lines of Python vs a new Rust server dependency tree. Revisit only if the
-  facade itself becomes a bottleneck.
+- **Rust, not Python**: the first facade was ~500 lines of Python over the
+  bindings. Benchmarked against the node on router-shaped traffic, its
+  per-request cost (thread hop, JSON, GIL) put a ~3 ms floor under every
+  answer and a ~10k req/s ceiling on the process, so the node won every
+  read it had in memory although the underlying reads are microseconds.
+  The Rust server (axum + tokio, `tokio-tungstenite` for the upstream
+  connection, no jsonrpsee because pass-through forwards raw frames) has no
+  such floor. The Python bindings stay: they are the library's API, not
+  the server.
 
 ## Architecture
 
@@ -123,7 +128,7 @@ Methods asi actually calls (surveyed from the asi source):
 |-----------------------------------------------|-------|-------------|
 | `state_getStorage` / `state_getStorageAt`     | local | `get_storage(at, key)` |
 | `state_queryStorageAt`                        | local | `get_storage_many(at, keys)` → `[{block, changes}]` |
-| `state_getKeys` / `state_getKeysPaged`        | local | `storage_pairs(at, prefix, start_after, limit)`, keys only |
+| `state_getKeys` / `state_getKeysPaged`        | local | `storage_keys(at, prefix, start_after, limit)` |
 | `chain_getBlockHash` / `chain_getHead`        | local | `block_hash(n)` / `best_block()` |
 | `chain_getFinalizedHead`                      | local | `finalized_block()` |
 | `chain_getHeader`                             | local | `header(hash)` + SCALE→JSON (see below) |
@@ -187,7 +192,7 @@ not blocks; in direct mode each one would start or join a 40–75 s reopen. The
 router only sends blocks at or below wortel's finalized block, so it never
 needs a newer snapshot; the periodic refresh is unchanged.
 
-**The method set** is `ROUTER_METHODS` in `server.py`, and `rpc_methods`
+**The method set** is `ROUTER_METHODS` in `serve/src/local.rs`, and `rpc_methods`
 advertises it, so the router reads it per pod — a rollout with pods on
 different wortel versions needs no router config. A method belongs in the set
 only if `examples/bench_router.py` shows it beats the node; to measure a
@@ -212,17 +217,17 @@ vs node:
 Router traffic is random historical reads on a multi-TB database, so the
 cold column is the one that counts; the storage reads and headers win it.
 `chain_getHeader` is in the set although the resolver's case (a value that
-is no block) loses by ~2.7 ms: that is the Python floor on an in-memory
-lookup, and both cases spare the node a read. Warm, the node wins almost
-everything: the Python layer costs about 100 µs of GIL time per request,
-which caps one facade process near 8–11k req/s against the node's 20k. That
-is above the router's expected rate, so a Rust server is not planned.
-`chain_getBlock` costs ~0.8 ms of GIL time per block for hex-encoding the
-extrinsics and `json.dumps` in Python; it rejoins once that encoding moves
-into the bindings. `chain_getBlockHash` is in memory on both sides, so the
-Python floor loses. `state_getKeysPaged` walks the trie through RocksDB node
-by node, where the node has an in-memory trie cache, and reads values it
-discards — it stays with the node until that path is optimised; its p99 is
+is no block) loses by ~2.7 ms: that was the Python facade's floor on an
+in-memory lookup, and both cases spare the node a read. Warm, the node won
+almost everything against the Python facade: its layer cost about 100 µs
+of GIL time per request, a ~3 ms floor at 32 in flight and a ceiling near
+8–11k req/s against the node's 20k. That floor is why the facade is now
+Rust; expect parity with the node warm and the cold wins to stay, and
+re-measure. `chain_getBlock` cost ~0.8 ms per block for hex-encoding in
+Python; the Rust server serializes the node's own `SignedBlock` type, so it
+is a candidate again. `state_getKeysPaged` walks the trie through RocksDB
+node by node, where the node has an in-memory trie cache; it now reads keys
+only (`storage_keys`) but stays with the node until re-measured; its p99 was
 far better than the node's only because the node's cold tail is bad. A full
 `state_getPairs` of the 47k-entry `TotalHotkeyAlpha` map at a random block
 from the last 1M takes about 10 s once the state column's SST metadata is
@@ -246,12 +251,13 @@ A `readonly` Reader is frozen at open time. Rules:
    that head always succeeds. The visible head lags the node by up to one
    refresh interval — acceptable for cron jobs, and the reason
    `websocket_insertion` is out of scope.
-2. **Background refresh.** A task reopens a new `Reader` every
+2. **Background refresh.** A task reopens a new reader every
    `--refresh-interval` (default 60 s; open is ~20 s warm) and swaps it
-   atomically. In-flight calls keep the old object; Python GC drops it.
+   atomically (`ArcSwap`). In-flight calls keep the `Arc` they started
+   with; the old reader is dropped when the last of them returns.
 3. **Stale snapshot.** Node compaction can delete an SST under the snapshot →
-   `OSError`. Handler: trigger refresh, retry the call once on the new
-   Reader, then error.
+   `Error::is_stale_snapshot()`. Handler: trigger refresh, retry the call
+   once on the new reader, then error.
 4. **Unknown/newer block hash.** A hash the snapshot lacks (client learned it
    out-of-band): trigger refresh and retry once; if still missing, forward
    that one call upstream. Correctness is preserved either way.
@@ -275,11 +281,13 @@ reconnect logic takes over (and re-fetches metadata itself).
 
 ## Concurrency
 
-- `asyncio` + `websockets`. Local reads run via `asyncio.to_thread` — the
-  bindings release the GIL, so traversals run truly parallel.
+- `tokio` + `axum` websockets. Local reads run on the blocking pool
+  (`spawn_blocking`), so traversals run in parallel and never stall the
+  connection tasks.
 - Requests within one client connection execute concurrently (asi pipelines
-  ids); responses return as they finish, per JSON-RPC.
-- A single shared `Reader` (`#[pyclass(frozen)]`, thread-safe) serves all
+  ids), one task per frame; responses return as they finish, per JSON-RPC,
+  through one bounded writer channel per connection.
+- A single shared reader (`Wortel` is `Send + Sync`) serves all
   connections. First traversal of a big map per *process* is the one cold
   cost (~70 s worst case); the long-lived facade pays it once.
 
@@ -293,19 +301,20 @@ reconnect logic takes over (and re-fetches metadata itself).
 | `--refresh-interval`        | `60`    | seconds between Reader reopens |
 | `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count (direct mode; router mode uses the node's 1000 and errors above it) |
 | `--router-methods` / `WORTEL_ROUTER_METHODS` | the benchmarked set | methods served in router mode: `all`, or a comma-separated subset of the candidates. For `bench_router.py`; production runs the default |
-| `--log-level` / `LOG_LEVEL` | `INFO` | logging level; `DEBUG` also shows websockets probe traffic |
+| `--skip-self-check`         | off     | serve a database without block-1 state (development databases only) |
+| `--log-level` / `LOG_LEVEL` | `info` | logging level or `tracing` filter (`debug`, `wortel_serve=debug,info`) |
 
 Node must run `--database rocksdb` and `--state-pruning archive` (plain, not
 `archive-canonical`) — verify before rollout. See **Deployment** below.
 
 ## Deployment
 
-**Image.** `Dockerfile` at the repo root: builder stage compiles the wheel
-from source (rust + maturin, `CARGO_BUILD_JOBS` capped at 4 so building on
-the node host leaves CPU for the node), runtime stage is `python:3.12-slim`
-with the wheel + `websockets`. Self-contained — **no PyPI or crates.io
-release is required**; push the image to the taoapp registry like any other
-service. Publishing wortel publicly is optional and orthogonal.
+**Image.** `Dockerfile` at the repo root: builder stage compiles
+`wortel-serve` from source (`CARGO_BUILD_JOBS` capped at 4 so building on
+the node host leaves CPU for the node), runtime stage is
+`distroless/cc-debian12` with the one binary. Self-contained — **no
+crates.io release is required**; push the image to the taoapp registry like
+any other service. Publishing wortel publicly is optional and orthogonal.
 
 **docker-compose** (the current archive-server layout):
 
@@ -400,10 +409,10 @@ RocksDB (the values are fixed when a Reader opens):
 block cache; the two-reader overlap during a refresh peaked at 2.6 GB.
 Requests 3Gi / limit 4Gi gives headroom for chain growth (RSS scales with
 SST count) and concurrent big-map responses (~15 MB each, transient). CPU:
-map traversals release the GIL but hex/JSON encoding holds it, so the
-process cannot use much more than 2 cores — request 1, limit 2; more buys
-nothing without a second replica. Testnet (~2 TB) needs proportionally less;
-keep the same limits unless memory is tight.
+reads and encoding both run on the blocking pool, so the process uses what
+it is given — request 1, limit 2 to start, raised from measurements.
+Testnet (~2 TB) needs proportionally less; keep the same limits unless
+memory is tight.
 
 **Release sequencing** — what has to ship, in order:
 

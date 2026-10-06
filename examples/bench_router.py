@@ -2,7 +2,7 @@
 against the node's own RPC, and report p50/p99 per method.
 
 The subtensor-router sends wortel a method only if wortel beats the node on
-it; these numbers decide ROUTER_METHODS in wortel/serve/server.py. Unlike
+it; these numbers decide ROUTER_METHODS in serve/src/local.rs. Unlike
 bench.rs and bench_vs_rpc.py (ETL patterns: one big map, block after block),
 this is many concurrent small reads at random historical blocks.
 
@@ -24,7 +24,7 @@ Blocks are drawn from the last --window blocks (default 1,000,000) ending at
 the facade's finalized block (GET /status) or --max-block, so the sample sits
 where the subnet maps exist and where the router's historical traffic is.
 
-Needs: pip install 'wortel[serve]' (websockets + the wortel key helpers).
+Needs: pip install wortel websockets (the wortel key helpers).
 """
 
 from __future__ import annotations
@@ -38,11 +38,10 @@ import random
 import time
 
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed
 
 import wortel
-from wortel.serve.server import MODE_HEADER
-
-from facade_conformance import facade_status  # sibling script
+from facade_conformance import MODE_HEADER, facade_status  # sibling script
 
 
 class Conn:
@@ -61,6 +60,8 @@ class Conn:
                 fut = self._pending.pop(reply.get("id"), None)
                 if fut is not None and not fut.done():
                     fut.set_result(reply)
+        except ConnectionClosed:
+            pass
         finally:
             for fut in self._pending.values():
                 if not fut.done():

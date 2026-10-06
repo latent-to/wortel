@@ -9,7 +9,7 @@ before trusting an ingestion (see docs/rpc-facade.md, testing step 2).
         [--blocks 1,1000,2500000] [--count 20] [--router-mode]
 
 With no --blocks, samples --count blocks evenly from 1..facade head.
-Needs: pip install 'wortel[serve]' (websockets + the wortel key helpers).
+Needs: pip install wortel websockets (the wortel key helpers).
 
 --router-mode connects to the facade as the subtensor-router does
 (X-Wortel-Mode: router). Successful answers are still byte-compared with the
@@ -30,7 +30,10 @@ from urllib.parse import urlsplit
 from websockets.asyncio.client import connect
 
 import wortel
-from wortel.serve.server import MODE_HEADER, NOT_IN_SNAPSHOT
+
+# The facade's router-mode contract (serve/src/rpc.rs, serve/src/server.rs).
+MODE_HEADER = "X-Wortel-Mode"
+NOT_IN_SNAPSHOT = -32090
 
 
 class Rpc:

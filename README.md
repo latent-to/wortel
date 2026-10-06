@@ -147,17 +147,17 @@ r = wortel.Reader(db_path)
 Keys can equally come from async-substrate-interface's metadata-driven
 `create_storage_key` — wortel only sees bytes.
 
-## RPC facade (`wortel.serve`)
+## RPC facade (`wortel-serve`)
 
-A JSON-RPC websocket sidecar for the node host: storage/chain reads are
-answered from a readonly Reader, everything else (`state_call`, metadata,
-`system_*`, `author_*`, subscriptions) forwards 1:1 to the node's own RPC.
-Clients built on async-substrate-interface work unchanged — only the endpoint
-URL changes. Design: `docs/rpc-facade.md`.
+A JSON-RPC websocket sidecar for the node host, a Rust binary in `serve/`:
+storage/chain reads are answered from a readonly reader, everything else
+(`state_call`, metadata, `system_*`, `author_*`, subscriptions) forwards 1:1
+to the node's own RPC. Clients built on async-substrate-interface work
+unchanged — only the endpoint URL changes. Design: `docs/rpc-facade.md`.
 
 ```bash
-pip install 'wortel[serve]'
-wortel-serve --db /data/subtensor/chains/bittensor/db/full \
+cargo build --release -p wortel-serve
+target/release/wortel-serve --db /data/subtensor/chains/bittensor/db/full \
     --upstream ws://127.0.0.1:9944 --listen 0.0.0.0:9955
 ```
 
@@ -189,7 +189,8 @@ let pairs = r.storage_pairs(&head, &wortel::keys::storage_prefix("SubtensorModul
 
 `cargo test` builds a synthetic client DB (real LayoutV1 trie via the same
 sp-trie the node uses, plus headers/lookup/meta/body columns) in a temp
-RocksDB and exercises every read path against it.
+RocksDB and exercises every read path against it; `serve/tests` runs the
+facade over the wire against the same database and a fake node.
 
 ## The name
 

@@ -1,7 +1,7 @@
 """wortel — direct RocksDB reader for subtensor archive-node state.
 
 The compiled extension lives in ``wortel._wortel``; this package re-exports
-its public surface and adds the pure-Python RPC facade under ``wortel.serve``.
+its public surface. The RPC facade is the Rust binary ``wortel-serve``.
 """
 
 from ._wortel import (

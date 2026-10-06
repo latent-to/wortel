@@ -9,15 +9,12 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     && apt-get install --no-install-recommends -y \
       clang \
       libclang-dev \
-      pkg-config \
-      python3-dev \
-      python3-pip \
-    && pip3 install --break-system-packages maturin
+      pkg-config
 
 WORKDIR /src
-COPY Cargo.toml Cargo.lock pyproject.toml ./
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY python ./python
+COPY serve ./serve
 
 # polkadot-sdk deps make this the slow step (~tens of minutes uncached).
 # Jobs capped so a build on the node host leaves CPU for the node.
@@ -27,15 +24,11 @@ ENV CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS}
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \
-    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    maturin build --release --out /wheels --interpreter /usr/bin/python3 \
-    && pip3 install --target /app /wheels/*.whl 'websockets>=13'
+    cargo build --release -p wortel-serve \
+    && cp target/release/wortel-serve /wortel-serve
 
-FROM gcr.io/distroless/python3-debian12
-COPY --from=build /app /app
-COPY --from=gcr.io/distroless/cc-debian12 /lib /lib
-COPY --from=gcr.io/distroless/cc-debian12 /usr/lib /usr/lib
+FROM gcr.io/distroless/cc-debian12
+COPY --from=build /wortel-serve /wortel-serve
 USER nonroot
-ENV PYTHONPATH=/app
 ENV WORTEL_DB=/data/subtensor/chains/bittensor/db/full
-ENTRYPOINT ["/usr/bin/python3", "-u", "-m", "wortel.serve"]
+ENTRYPOINT ["/wortel-serve"]
