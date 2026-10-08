@@ -73,6 +73,9 @@ Two runnable benchmarks live in `examples/`:
 - `bench_vs_rpc.py` — races wortel against the node's own RPC on a large map
   and verifies a random sample of values byte-for-byte (needs the wheel
   installed and the RPC reachable).
+- `bench_router.py` — replays router-shaped traffic (many concurrent small
+  reads at random historical blocks) against the facade's router mode and the
+  node, p50/p99 per method.
 
 Measured on the live finney archive node (4.2 TB, 143k SSTs, host NVMe) at
 historical block 8,700,000, starting from a **cold OS page cache** — the
@@ -144,17 +147,17 @@ r = wortel.Reader(db_path)
 Keys can equally come from async-substrate-interface's metadata-driven
 `create_storage_key` — wortel only sees bytes.
 
-## RPC facade (`wortel.serve`)
+## RPC facade (`wortel-serve`)
 
-A JSON-RPC websocket sidecar for the node host: storage/chain reads are
-answered from a readonly Reader, everything else (`state_call`, metadata,
-`system_*`, `author_*`, subscriptions) forwards 1:1 to the node's own RPC.
-Clients built on async-substrate-interface work unchanged — only the endpoint
-URL changes. Design: `docs/rpc-facade.md`.
+A JSON-RPC websocket sidecar for the node host, a Rust binary in `serve/`:
+storage/chain reads are answered from a readonly reader, everything else
+(`state_call`, metadata, `system_*`, `author_*`, subscriptions) forwards 1:1
+to the node's own RPC. Clients built on async-substrate-interface work
+unchanged — only the endpoint URL changes. Design: `docs/rpc-facade.md`.
 
 ```bash
-pip install 'wortel[serve]'
-wortel-serve --db /data/subtensor/chains/bittensor/db/full \
+cargo build --release -p wortel-serve
+target/release/wortel-serve --db /data/subtensor/chains/bittensor/db/full \
     --upstream ws://127.0.0.1:9944 --listen 0.0.0.0:9955
 ```
 
@@ -163,6 +166,14 @@ swaps atomically, so the served head lags the node by up to that interval —
 fine for cron ETL, wrong for head-subscription services (which should keep
 using the node RPC directly). Conformance check against the node:
 `python examples/facade_conformance.py --facade ws://… --node ws://…`.
+
+A client that holds its own node connections (the subtensor-router) connects
+with the handshake header `X-Wortel-Mode: router`: no pass-through, no
+fallback, no waiting — a read the snapshot cannot answer returns error
+`-32090` at once and the client asks the node. `GET /status` on the same port
+reports health, the snapshot's best/finalized blocks and its age as JSON. The
+facade never exits on a bad or missing database; it retries and reports
+`healthy: false`.
 
 ## Rust
 
@@ -178,7 +189,8 @@ let pairs = r.storage_pairs(&head, &wortel::keys::storage_prefix("SubtensorModul
 
 `cargo test` builds a synthetic client DB (real LayoutV1 trie via the same
 sp-trie the node uses, plus headers/lookup/meta/body columns) in a temp
-RocksDB and exercises every read path against it.
+RocksDB and exercises every read path against it; `serve/tests` runs the
+facade over the wire against the same database and a fake node.
 
 ## The name
 

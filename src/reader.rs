@@ -5,7 +5,7 @@ use hash_db::{HashDBRef, Prefix};
 use rocksdb::{BlockBasedOptions, Cache, Options};
 use sp_core::{Blake2Hasher, H256};
 use sp_runtime::{OpaqueExtrinsic, generic, traits::BlakeTwo256};
-use sp_trie::{DBValue, Trie, TrieDBIterator, trie_types::TrieDBBuilder};
+use sp_trie::{DBValue, Trie, TrieDBIterator, TrieDBKeyIterator, trie_types::TrieDBBuilder};
 
 use crate::columns::{self, meta_keys};
 use crate::error::{Error, Result};
@@ -288,6 +288,40 @@ impl Wortel {
                     }
                 }
                 out.push((key, value));
+                if out.len() >= limit {
+                    break;
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// state_getKeysPaged: keys under `prefix`, values left unread. Same
+    /// pagination contract as [`Self::storage_pairs`].
+    pub fn storage_keys(
+        &self,
+        block_hash: &H256,
+        prefix: &[u8],
+        start_after: Option<&[u8]>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Vec<u8>>> {
+        self.with_trie(block_hash, |trie| {
+            let iter = match start_after {
+                Some(start) => TrieDBKeyIterator::new_prefixed_then_seek(trie, prefix, start),
+                None => TrieDBKeyIterator::new_prefixed(trie, prefix),
+            }
+            .map_err(|e| Error::trie(*block_hash, e))?;
+
+            let limit = limit.unwrap_or(usize::MAX);
+            let mut out = Vec::new();
+            for item in iter {
+                let key = item.map_err(|e| Error::trie(*block_hash, e))?;
+                if let Some(start) = start_after {
+                    if key.as_slice() <= start {
+                        continue;
+                    }
+                }
+                out.push(key);
                 if out.len() >= limit {
                     break;
                 }

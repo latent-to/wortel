@@ -1,0 +1,35 @@
+[package]
+name = "wortel-serve"
+version = "0.1.0"
+edition = "2024"
+description = "JSON-RPC websocket sidecar serving storage and chain reads from a subtensor archive node's RocksDB"
+license = "MIT"
+
+[[bin]]
+name = "wortel-serve"
+path = "src/main.rs"
+
+[dependencies]
+wortel = { path = ".." }
+
+sp-core = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
+sp-runtime = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
+sp-rpc = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38" }
+codec = { package = "parity-scale-codec", version = "3.7" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "signal"] }
+axum = { version = "0.8", features = ["ws", "http1"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+arc-swap = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+
+[dev-dependencies]
+wortel = { path = "..", features = ["fixture"] }
+tempfile = "3"
+http = "1"

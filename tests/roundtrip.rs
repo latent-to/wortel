@@ -7,8 +7,7 @@ use codec::Encode;
 use sp_core::H256;
 use wortel::{OpenMode, Wortel};
 
-mod common;
-use common::build_db;
+use wortel::fixture::build_db;
 
 #[test]
 fn reads_synthetic_substrate_db() {

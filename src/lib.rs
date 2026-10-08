@@ -27,5 +27,8 @@ mod reader;
 #[cfg(feature = "python")]
 mod py;
 
+#[cfg(feature = "fixture")]
+pub mod fixture;
+
 pub use error::{Error, Result};
 pub use reader::{Header, OpenMode, Wortel};

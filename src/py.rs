@@ -19,9 +19,7 @@ fn to_py_err(e: Error) -> PyErr {
         return PyOSError::new_err(format!("stale snapshot: {e}"));
     }
     match e {
-        Error::UnknownBlock(_) | Error::MissingState(_, _) => {
-            PyLookupError::new_err(e.to_string())
-        }
+        Error::UnknownBlock(_) | Error::MissingState(_, _) => PyLookupError::new_err(e.to_string()),
         Error::InvalidInput(_) => PyValueError::new_err(e.to_string()),
         other => PyRuntimeError::new_err(other.to_string()),
     }
@@ -104,67 +102,75 @@ impl Reader {
             .map_err(to_py_err)
     }
 
-    fn genesis_hash(&self) -> PyResult<Option<Vec<u8>>> {
-        Ok(self
-            .inner
-            .genesis_hash()
+    // Every read releases the GIL: a cold read is a disk seek, and a server
+    // running these in worker threads must not stall its other requests on
+    // it (measured: a GIL-held cold header read queued every request behind
+    // it, see examples/bench_router.py).
+
+    fn genesis_hash(&self, py: Python<'_>) -> PyResult<Option<Vec<u8>>> {
+        Ok(py
+            .detach(|| self.inner.genesis_hash())
             .map_err(to_py_err)?
             .map(|h| h.as_bytes().to_vec()))
     }
 
     /// `(number, hash)` of the best block, or None on an empty db.
-    fn best_block(&self) -> PyResult<Option<(u32, Vec<u8>)>> {
-        Ok(self
-            .inner
-            .best_block()
+    fn best_block(&self, py: Python<'_>) -> PyResult<Option<(u32, Vec<u8>)>> {
+        Ok(py
+            .detach(|| self.inner.best_block())
             .map_err(to_py_err)?
             .map(|(n, h)| (n, h.as_bytes().to_vec())))
     }
 
     /// `(number, hash)` of the last finalized block.
-    fn finalized_block(&self) -> PyResult<Option<(u32, Vec<u8>)>> {
-        Ok(self
-            .inner
-            .finalized_block()
+    fn finalized_block(&self, py: Python<'_>) -> PyResult<Option<(u32, Vec<u8>)>> {
+        Ok(py
+            .detach(|| self.inner.finalized_block())
             .map_err(to_py_err)?
             .map(|(n, h)| (n, h.as_bytes().to_vec())))
     }
 
     /// Hash of the canonical block at `number` (chain_getBlockHash).
-    fn block_hash(&self, number: u32) -> PyResult<Option<Vec<u8>>> {
-        Ok(self
-            .inner
-            .block_hash(number)
+    fn block_hash(&self, py: Python<'_>, number: u32) -> PyResult<Option<Vec<u8>>> {
+        Ok(py
+            .detach(|| self.inner.block_hash(number))
             .map_err(to_py_err)?
             .map(|h| h.as_bytes().to_vec()))
     }
 
-    fn block_number(&self, block_hash: &[u8]) -> PyResult<Option<u32>> {
-        self.inner.block_number(&h256(block_hash)?).map_err(to_py_err)
+    fn block_number(&self, py: Python<'_>, block_hash: &[u8]) -> PyResult<Option<u32>> {
+        let hash = h256(block_hash)?;
+        py.detach(|| self.inner.block_number(&hash))
+            .map_err(to_py_err)
     }
 
     /// SCALE-encoded header bytes (chain_getHeader, undecoded).
-    fn header(&self, block_hash: &[u8]) -> PyResult<Option<Vec<u8>>> {
-        self.inner.header_raw(&h256(block_hash)?).map_err(to_py_err)
+    fn header(&self, py: Python<'_>, block_hash: &[u8]) -> PyResult<Option<Vec<u8>>> {
+        let hash = h256(block_hash)?;
+        py.detach(|| self.inner.header_raw(&hash))
+            .map_err(to_py_err)
     }
 
-    fn state_root(&self, block_hash: &[u8]) -> PyResult<Option<Vec<u8>>> {
-        Ok(self
-            .inner
-            .state_root(&h256(block_hash)?)
+    fn state_root(&self, py: Python<'_>, block_hash: &[u8]) -> PyResult<Option<Vec<u8>>> {
+        let hash = h256(block_hash)?;
+        Ok(py
+            .detach(|| self.inner.state_root(&hash))
             .map_err(to_py_err)?
             .map(|h| h.as_bytes().to_vec()))
     }
 
     /// SCALE-encoded body (`Vec<OpaqueExtrinsic>`), undecoded.
-    fn body(&self, block_hash: &[u8]) -> PyResult<Option<Vec<u8>>> {
-        self.inner.body_raw(&h256(block_hash)?).map_err(to_py_err)
+    fn body(&self, py: Python<'_>, block_hash: &[u8]) -> PyResult<Option<Vec<u8>>> {
+        let hash = h256(block_hash)?;
+        py.detach(|| self.inner.body_raw(&hash)).map_err(to_py_err)
     }
 
     /// The block's extrinsics, one `bytes` per extrinsic — the same bytes the
     /// RPC returns (compact length prefix included).
-    fn extrinsics(&self, block_hash: &[u8]) -> PyResult<Option<Vec<Vec<u8>>>> {
-        self.inner.extrinsics(&h256(block_hash)?).map_err(to_py_err)
+    fn extrinsics(&self, py: Python<'_>, block_hash: &[u8]) -> PyResult<Option<Vec<Vec<u8>>>> {
+        let hash = h256(block_hash)?;
+        py.detach(|| self.inner.extrinsics(&hash))
+            .map_err(to_py_err)
     }
 
     /// state_getStorage at `block_hash`.
