@@ -31,6 +31,12 @@ struct Args {
     #[arg(long, default_value_t = 60.0)]
     refresh_interval: f64,
 
+    /// RocksDB block cache in MiB, kept across reader reopens. It also holds
+    /// the index and filter blocks of every SST touched, so trie walks on an
+    /// archive database want GiBs
+    #[arg(long, env = "WORTEL_CACHE_MIB", default_value_t = 512)]
+    cache_mib: usize,
+
     /// Cap for state_getKeysPaged count (direct mode)
     #[arg(long, default_value_t = 1000)]
     max_keys_page: u32,
@@ -68,9 +74,17 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
+    let cache = match wortel::block_cache(args.cache_mib) {
+        Ok(cache) => cache,
+        Err(e) => {
+            eprintln!("wortel-serve: error: --cache-mib: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
     let db = args.db.clone();
     let readers = Readers::new(
-        Box::new(move || Wortel::open(&db, OpenMode::ReadOnly)),
+        // One cache for every reopen: a refreshed reader starts warm.
+        Box::new(move || Wortel::open_with_block_cache(&db, OpenMode::ReadOnly, &cache)),
         Options {
             refresh_interval: Duration::from_secs_f64(args.refresh_interval),
             check: (!args.skip_self_check).then(|| Box::new(wortel_serve::self_check) as _),
