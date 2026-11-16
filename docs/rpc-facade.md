@@ -298,6 +298,7 @@ reconnect logic takes over (and re-fetches metadata itself).
 | `--upstream` / `WORTEL_UPSTREAM` | `ws://127.0.0.1:9944` | node RPC |
 | `--listen`                  | `0.0.0.0:9955` | bind address |
 | `--refresh-interval`        | `60`    | seconds between Reader reopens |
+| `--cache-mib` / `WORTEL_CACHE_MIB` | `512` | RocksDB block cache, MiB, shared across reader reopens. Holds index and filter blocks too; see **Sizing** |
 | `--max-keys-page`           | `1000`  | cap for `state_getKeysPaged` count (direct mode; router mode uses the node's 1000 and errors above it) |
 | `--router-methods` / `WORTEL_ROUTER_METHODS` | the benchmarked set | methods served in router mode: `all`, or a comma-separated subset of the candidates. For `bench_router.py`; production runs the default |
 | `--skip-self-check`         | off     | serve a database without block-1 state (development databases only) |
@@ -406,6 +407,12 @@ RocksDB (the values are fixed when a Reader opens):
 **Sizing (measured on the mainnet DB, 143k SSTs).** Steady-state RSS ~2.4 GB
 — RocksDB table metadata for >100k SSTs dominates, on top of the 512 MiB
 block cache; the two-reader overlap during a refresh peaked at 2.6 GB.
+`--cache-mib` adds to that one for one. The cache also holds every index and
+filter block a read touches, and on this database those alone are tens of
+GB, so at 512 MiB a trie walk keeps reloading them: ~100 µs per trie node,
+the same cold or warm (`state_getKeysPaged` ~105 ms per 1000 keys, a full
+47k-entry map 15–55 s). Raise it (2–4 GiB) where memory allows, and raise
+the pod's memory request and limit by the same amount.
 Requests 3Gi / limit 4Gi gives headroom for chain growth (RSS scales with
 SST count) and concurrent big-map responses (~15 MB each, transient). CPU:
 reads and encoding both run on the blocking pool, so the process uses what

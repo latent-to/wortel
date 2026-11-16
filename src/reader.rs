@@ -67,19 +67,22 @@ impl Wortel {
         mode: OpenMode,
         cache_mib: usize,
     ) -> Result<Self> {
-        if cache_mib == 0 {
-            return Err(Error::InvalidInput(
-                "cache_mib must be > 0 (a disabled block cache pins all \
-                 index/filter blocks on the heap)"
-                    .into(),
-            ));
-        }
+        Self::open_with_block_cache(path, mode, &block_cache(cache_mib)?)
+    }
 
+    /// Open on a block cache the caller owns (see [`block_cache`]). A
+    /// process that reopens its reader to refresh passes the same cache each
+    /// time: RocksDB keys cached blocks by SST file, so the new reader starts
+    /// warm instead of re-reading every index, filter and data block.
+    pub fn open_with_block_cache(
+        path: impl AsRef<Path>,
+        mode: OpenMode,
+        cache: &BlockCache,
+    ) -> Result<Self> {
         let mut opts = Options::default();
         opts.create_if_missing(false);
         let mut bopts = BlockBasedOptions::default();
-        let cache = Cache::new_lru_cache(cache_mib * 1024 * 1024);
-        bopts.set_block_cache(&cache);
+        bopts.set_block_cache(cache);
         bopts.set_cache_index_and_filter_blocks(true);
         opts.set_block_based_table_factory(&bopts);
 
@@ -347,6 +350,23 @@ impl Wortel {
         let trie = TrieDBBuilder::<Blake2Hasher>::new(&state, &root).build();
         f(&trie)
     }
+}
+
+/// A RocksDB block cache, shareable between readers (cloning shares it).
+pub type BlockCache = Cache;
+
+/// A block cache of `cache_mib` MiB. It also holds the index and filter
+/// blocks, which for an archive DB are far larger than any practical budget,
+/// so a small cache spends its time reloading them.
+pub fn block_cache(cache_mib: usize) -> Result<BlockCache> {
+    if cache_mib == 0 {
+        return Err(Error::InvalidInput(
+            "cache_mib must be > 0 (a disabled block cache pins all \
+             index/filter blocks on the heap)"
+                .into(),
+        ));
+    }
+    Ok(Cache::new_lru_cache(cache_mib * 1024 * 1024))
 }
 
 /// Adapter exposing the STATE column as the `HashDBRef` the trie reader wants.

@@ -31,4 +31,4 @@ mod py;
 pub mod fixture;
 
 pub use error::{Error, Result};
-pub use reader::{Header, OpenMode, Wortel};
+pub use reader::{BlockCache, Header, OpenMode, Wortel, block_cache};
