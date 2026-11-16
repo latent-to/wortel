@@ -1,0 +1,34 @@
+name: Release (crates.io)
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      # First publish needs a token (secrets.CARGO_REGISTRY_TOKEN, scope
+      # publish-new). Once both crates exist, switch to crates.io trusted
+      # publishing: configure the repo + workflow on crates.io, add
+      # `id-token: write` above, and take the token from
+      # rust-lang/crates-io-auth-action instead of the secret.
+
+      # cargo waits until wortel is live in the index, so wortel-serve
+      # resolves its `wortel = { version = "1.0.0" }` dependency.
+      - name: Publish wortel
+        run: cargo publish -p wortel
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish wortel-serve
+        run: cargo publish -p wortel-serve
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
