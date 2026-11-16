@@ -12,6 +12,8 @@ use sp_core::H256;
 use crate::error::Error;
 use crate::{OpenMode, Wortel, keys};
 
+const DEFAULT_CACHE_MIB: usize = 512;
+
 fn to_py_err(e: Error) -> PyErr {
     if e.is_stale_snapshot() {
         // A readonly Reader raced the node's compaction: recreate the Reader
@@ -37,6 +39,40 @@ fn h256(bytes: &[u8]) -> PyResult<H256> {
 
 static SECONDARY_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// A RocksDB block cache of `mib` MiB that Readers can share.
+///
+/// Pass the same object as `cache=` to each `Reader`. A process that makes a
+/// new readonly Reader to refresh then starts warm: RocksDB keys cached
+/// blocks by SST file, so the new Reader finds the data blocks the old one
+/// loaded. Readers that are open at the same time also share one data-block
+/// budget. Index and filter blocks are not in the cache: each Reader keeps
+/// them on the heap for the SST files it has opened.
+#[pyclass(frozen)]
+struct BlockCache {
+    inner: crate::BlockCache,
+    mib: usize,
+}
+
+#[pymethods]
+impl BlockCache {
+    #[new]
+    #[pyo3(signature = (mib=DEFAULT_CACHE_MIB))]
+    fn new(mib: usize) -> PyResult<Self> {
+        let inner = crate::block_cache(mib).map_err(to_py_err)?;
+        Ok(BlockCache { inner, mib })
+    }
+
+    /// The size this cache was made with, in MiB.
+    #[getter]
+    fn mib(&self) -> usize {
+        self.mib
+    }
+
+    fn __repr__(&self) -> String {
+        format!("BlockCache(mib={})", self.mib)
+    }
+}
+
 /// Reader over a subtensor archive node's RocksDB.
 #[pyclass(frozen)]
 struct Reader {
@@ -58,15 +94,28 @@ impl Reader {
     ///   it); `secondary_path` is a scratch dir for this reader (auto-created
     ///   under the system temp dir if not given).
     /// - `"primary"` — read-write lock; only when no node uses the DB.
+    ///
+    /// Block cache: give `cache_mib` (default 512) for a cache that only
+    /// this Reader uses, or `cache` (a `BlockCache`) to share one between
+    /// Readers. Give one of the two, not both.
     #[new]
-    #[pyo3(signature = (path, mode="readonly", secondary_path=None, cache_mib=512))]
+    #[pyo3(signature = (path, mode="readonly", secondary_path=None, cache_mib=None, cache=None))]
     fn new(
         py: Python<'_>,
         path: String,
         mode: &str,
         secondary_path: Option<String>,
-        cache_mib: usize,
+        cache_mib: Option<usize>,
+        cache: Option<PyRef<'_, BlockCache>>,
     ) -> PyResult<Self> {
+        if cache_mib.is_some() && cache.is_some() {
+            return Err(PyValueError::new_err(
+                "give cache_mib or cache, not both (the size of a shared \
+                 cache is set when the BlockCache is made)",
+            ));
+        }
+        // Cloning shares the cache; the clone can cross the GIL release.
+        let cache = cache.map(|c| c.inner.clone());
         let mode = match mode {
             "readonly" => OpenMode::ReadOnly,
             "primary" => OpenMode::Primary,
@@ -90,7 +139,12 @@ impl Reader {
         // Opening scans >100k SSTs and can take a minute — release the GIL so
         // a server refreshing its Reader in a worker thread stays responsive.
         let inner = py
-            .detach(|| Wortel::open_with_cache(path, mode, cache_mib))
+            .detach(|| match cache {
+                Some(cache) => Wortel::open_with_block_cache(path, mode, &cache),
+                None => {
+                    Wortel::open_with_cache(path, mode, cache_mib.unwrap_or(DEFAULT_CACHE_MIB))
+                }
+            })
             .map_err(to_py_err)?;
         Ok(Reader { inner })
     }
@@ -305,6 +359,7 @@ fn blake2_128_concat(data: &[u8]) -> Vec<u8> {
 #[pymodule]
 #[pyo3(name = "_wortel")]
 fn wortel(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<BlockCache>()?;
     m.add_class::<Reader>()?;
     m.add_class::<PrefixIter>()?;
     m.add_function(wrap_pyfunction!(storage_prefix, m)?)?;

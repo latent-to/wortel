@@ -94,3 +94,27 @@ fn reads_synthetic_substrate_db() {
         pairs
     );
 }
+
+#[test]
+fn readers_share_a_block_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let (hash, _) = build_db(dir.path());
+    let prefix = wortel::keys::storage_prefix("SubtensorModule", "Tempo");
+
+    let cache = wortel::block_cache(8).unwrap();
+    assert_eq!(cache.get_usage(), 0);
+
+    // Two readers open at the same time, then a reopen: all on one cache.
+    let a = Wortel::open_with_block_cache(dir.path(), OpenMode::ReadOnly, &cache).unwrap();
+    let b = Wortel::open_with_block_cache(dir.path(), OpenMode::ReadOnly, &cache).unwrap();
+    let want = a.storage_pairs(&hash, &prefix, None, None).unwrap();
+    assert_eq!(want.len(), 50);
+    assert!(cache.get_usage() > 0, "reads must fill the shared cache");
+    assert_eq!(b.storage_pairs(&hash, &prefix, None, None).unwrap(), want);
+
+    drop((a, b));
+    let c = Wortel::open_with_block_cache(dir.path(), OpenMode::ReadOnly, &cache).unwrap();
+    assert_eq!(c.storage_pairs(&hash, &prefix, None, None).unwrap(), want);
+
+    assert!(wortel::block_cache(0).is_err());
+}

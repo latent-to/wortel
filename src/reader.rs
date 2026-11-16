@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use codec::Decode;
 use hash_db::{HashDBRef, Prefix};
-use rocksdb::{BlockBasedOptions, Cache, Options};
+use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options};
 use sp_core::{Blake2Hasher, H256};
 use sp_runtime::{OpaqueExtrinsic, generic, traits::BlakeTwo256};
 use sp_trie::{DBValue, Trie, TrieDBIterator, TrieDBKeyIterator, trie_types::TrieDBBuilder};
@@ -59,9 +59,9 @@ impl Wortel {
 
     /// Open with an explicit block-cache budget (MiB).
     ///
-    /// Index and filter blocks are confined to the cache
-    /// (`cache_index_and_filter_blocks`) — without that, an archive DB with
-    /// >100k SST files pins tens of GB of index blocks on the heap.
+    /// The budget is for data blocks only. Index and filter blocks stay on
+    /// the heap, outside it, for each SST file a read has opened: see
+    /// [`Wortel::open_with_block_cache`].
     pub fn open_with_cache(
         path: impl AsRef<Path>,
         mode: OpenMode,
@@ -73,7 +73,14 @@ impl Wortel {
     /// Open on a block cache the caller owns (see [`block_cache`]). A
     /// process that reopens its reader to refresh passes the same cache each
     /// time: RocksDB keys cached blocks by SST file, so the new reader starts
-    /// warm instead of re-reading every index, filter and data block.
+    /// warm instead of re-reading every data block.
+    ///
+    /// The cache holds data blocks only. Index and filter blocks stay on the
+    /// heap (`cache_index_and_filter_blocks(false)`), so memory grows with
+    /// the number of SST files that reads have opened and is not limited by
+    /// the cache size. With them in the cache, a 2 GiB cache on the mainnet
+    /// archive DB reloaded them continuously: a warm 47k-entry map walk took
+    /// 15 s, against 0.5 s with them on the heap.
     pub fn open_with_block_cache(
         path: impl AsRef<Path>,
         mode: OpenMode,
@@ -83,13 +90,22 @@ impl Wortel {
         opts.create_if_missing(false);
         let mut bopts = BlockBasedOptions::default();
         bopts.set_block_cache(cache);
-        bopts.set_cache_index_and_filter_blocks(true);
+        bopts.set_cache_index_and_filter_blocks(false);
         opts.set_block_based_table_factory(&bopts);
 
         // "default" always exists; the data lives in kvdb-rocksdb's col0..col12.
-        let cf_names: Vec<String> = std::iter::once("default".to_string())
-            .chain((0..columns::NUM_COLUMNS).map(columns::cf_name))
-            .collect();
+        // Each column family gets the table options explicitly: the
+        // name-only open functions give a named column family
+        // `Options::default()`, which has its own small block cache.
+        let cf_descriptors = || {
+            std::iter::once("default".to_string())
+                .chain((0..columns::NUM_COLUMNS).map(columns::cf_name))
+                .map(|name| {
+                    let mut cf_opts = Options::default();
+                    cf_opts.set_block_based_table_factory(&bopts);
+                    ColumnFamilyDescriptor::new(name, cf_opts)
+                })
+        };
 
         let db = match mode {
             OpenMode::ReadOnly => {
@@ -103,7 +119,12 @@ impl Wortel {
                 // the (new) manifest, so a handful of attempts suffices.
                 let mut attempt = 0;
                 loop {
-                    match Db::open_cf_for_read_only(&opts, path.as_ref(), &cf_names, false) {
+                    match Db::open_cf_descriptors_read_only(
+                        &opts,
+                        path.as_ref(),
+                        cf_descriptors(),
+                        false,
+                    ) {
                         Ok(db) => break db,
                         Err(e) if is_stale_file_error(&e) && attempt < 5 => {
                             attempt += 1;
@@ -118,11 +139,16 @@ impl Wortel {
                 // open, so lift the fd soft limit as far as allowed.
                 raise_fd_limit();
                 opts.set_max_open_files(-1);
-                Db::open_cf_as_secondary(&opts, path.as_ref(), &secondary_path, &cf_names)?
+                Db::open_cf_descriptors_as_secondary(
+                    &opts,
+                    path.as_ref(),
+                    &secondary_path,
+                    cf_descriptors(),
+                )?
             }
             OpenMode::Primary => {
                 opts.set_max_open_files(512);
-                Db::open_cf(&opts, path.as_ref(), &cf_names)?
+                Db::open_cf_descriptors(&opts, path.as_ref(), cf_descriptors())?
             }
         };
         Ok(Wortel { db })
@@ -355,14 +381,13 @@ impl Wortel {
 /// A RocksDB block cache, shareable between readers (cloning shares it).
 pub type BlockCache = Cache;
 
-/// A block cache of `cache_mib` MiB. It also holds the index and filter
-/// blocks, which for an archive DB are far larger than any practical budget,
-/// so a small cache spends its time reloading them.
+/// A block cache of `cache_mib` MiB for data blocks. Index and filter blocks
+/// are not in it: see [`Wortel::open_with_block_cache`].
 pub fn block_cache(cache_mib: usize) -> Result<BlockCache> {
     if cache_mib == 0 {
         return Err(Error::InvalidInput(
-            "cache_mib must be > 0 (a disabled block cache pins all \
-             index/filter blocks on the heap)"
+            "cache_mib must be > 0 (with no block cache, each read of a data \
+             block goes to the file again)"
                 .into(),
         ));
     }

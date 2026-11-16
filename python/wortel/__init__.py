@@ -5,6 +5,7 @@ its public surface. The RPC facade is the Rust binary ``wortel-serve``.
 """
 
 from ._wortel import (
+    BlockCache,
     Reader,
     blake2_128_concat,
     storage_prefix,
@@ -12,6 +13,7 @@ from ._wortel import (
 )
 
 __all__ = [
+    "BlockCache",
     "Reader",
     "blake2_128_concat",
     "storage_prefix",

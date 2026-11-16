@@ -31,9 +31,8 @@ struct Args {
     #[arg(long, default_value_t = 60.0)]
     refresh_interval: f64,
 
-    /// RocksDB block cache in MiB, kept across reader reopens. It also holds
-    /// the index and filter blocks of every SST touched, so trie walks on an
-    /// archive database want GiBs
+    /// RocksDB block cache for data blocks in MiB, kept across reader
+    /// reopens. Index and filter blocks stay on the heap, outside this limit
     #[arg(long, env = "WORTEL_CACHE_MIB", default_value_t = 512)]
     cache_mib: usize,
 

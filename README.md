@@ -143,6 +143,11 @@ for key, value in r.iter_prefix(
 # Refresh view of the chain: readonly mode → new Reader;
 # secondary mode → r.catch_up()
 r = wortel.Reader(db_path)
+
+# A process that refreshes again and again shares one block cache, so each
+# new Reader starts warm (default: a new 512 MiB cache for each Reader):
+cache = wortel.BlockCache(2048)  # MiB
+r = wortel.Reader(db_path, cache=cache)
 ```
 
 Keys can equally come from async-substrate-interface's metadata-driven
