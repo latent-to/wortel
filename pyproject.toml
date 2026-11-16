@@ -4,10 +4,28 @@ build-backend = "maturin"
 
 [project]
 name = "wortel"
-version = "0.1.0"
+version = "1.0.0"
 description = "Direct RocksDB reader for subtensor archive-node state"
+readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
+keywords = ["subtensor", "bittensor", "substrate", "rocksdb", "blockchain"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Repository = "https://github.com/latent-to/wortel"
+Issues = "https://github.com/latent-to/wortel/issues"
 
 [tool.maturin]
 features = ["python"]

@@ -3,20 +3,33 @@ members = ["serve"]
 
 [package]
 name = "wortel"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Direct RocksDB reader for subtensor archive-node state, mirroring the substrate RPC surface"
 license = "MIT"
+repository = "https://github.com/latent-to/wortel"
+readme = "README.md"
+keywords = ["subtensor", "bittensor", "substrate", "rocksdb", "blockchain"]
+categories = ["database", "cryptography::cryptocurrencies"]
+# Keep the crate tarball lean: no CI/Docker files or the 478K social image.
+exclude = ["social.png", ".github/", "Dockerfile", ".dockerignore", "pyproject.toml", "python/"]
 
 [lib]
 name = "wortel"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Pinned to the exact polkadot-sdk revision subtensor uses (see ~/Git/subtensor/Cargo.lock)
-sp-core = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
-sp-runtime = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
-sp-trie = { git = "https://github.com/RaoFoundation/polkadot-sdk.git", rev = "a08c7b0f0b6429910a953cbbaec4b4138294fa38", default-features = false, features = ["std"] }
+# crates.io releases of the sp-* versions that subtensor's polkadot-sdk fork
+# (RaoFoundation/polkadot-sdk @ a08c7b0f0b64) resolves in its lockfile. We use
+# crates.io instead of the fork because crates.io rejects git dependencies;
+# wortel only uses standard upstream APIs (trie codec, hashing, generic block
+# types). tests/roundtrip.rs and examples/facade_conformance.py verify
+# byte-for-byte behavior. When subtensor bumps its revision, match the sp-*
+# versions its new lockfile resolves and re-run both.
+sp-core = { version = "37.0.0", default-features = false, features = ["std"] }
+sp-runtime = { version = "42.0.0", default-features = false, features = ["std"] }
+sp-trie = { version = "40.0.0", default-features = false, features = ["std"] }
 
 # Same versions subtensor's lockfile resolves (crates.io)
 codec = { package = "parity-scale-codec", version = "3.7" }

@@ -9,11 +9,12 @@ local reads of the node's own DB — same keys in, same SCALE bytes out, so the
 existing key construction and `scalecodec` decoding on the Python side work
 unchanged.
 
-Pinned to the exact polkadot-sdk revision subtensor builds against
-(`RaoFoundation/polkadot-sdk @ a08c7b0f0b64`), so the trie codec, column
-layout, and key schemes are correct by construction. When subtensor bumps its
-revision, bump the `rev` in `Cargo.toml` and re-check `src/columns.rs` against
-that revision's `sc-client-db`.
+Pinned to the crates.io releases of the `sp-*` versions that subtensor's
+polkadot-sdk revision (`RaoFoundation/polkadot-sdk @ a08c7b0f0b64`) resolves,
+so the trie codec, column layout, and key schemes are correct by construction.
+When subtensor bumps its revision, match the `sp-*` versions in `Cargo.toml`
+to its new lockfile and re-check `src/columns.rs` against that revision's
+`sc-client-db`.
 
 ## What it maps to
 
